@@ -7,13 +7,19 @@
     "AGENTS.md": "9ac997cab89bf1c178b9ee8b5901f7cfad8d7bc1183f0dd7663fcafc4d380cf4",
     "AI_Development_Context.md": "6adf0c0b21c12a4a452823b8224a8f76c252aa1e08ff04a9b5910564e73c0f95",
     "CLAUDE.md": "e7853d902778dad2a349217bab21fa5d606cb23551d3cdb009f21cc3249f81cd",
-    "README.md": "81abfc95c47de4f2ae572cec19a2c7c8c9677c87c2302da7d32334b7e93144dd",
-    "src/baseline.py": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+    "README.md": "12698f4122f39169fbb1d94bde7ef189ee0286131c80f3d2127b9d16df8f7a99",
+    "docs/lstm-baseline.md": "4054d5029053f96da37c1bdc69d47f5d9a6267d77a779dc9810d223c69dabbcd",
+    "docs/lstm-review.md": "c33fdc452eda879c05c9b66e85ba808332916abf78f37408dac71437906cfcb4",
+    "src/baseline.py": "23b9da09be6a07ad5b64a2b7b93927e29ff9bad4d7d3d6d44d506e29e0d58a0e",
+    "src/model.py": "3244b08a4338436a49d0490267ba5cb18642f6b454bf30a9c01ab28b8e569321",
+    "tests/test_augmentation.py": "24986df01f03cbed03f81c16057da1095071367b72e202787e41c2f9e337f82c",
+    "tests/test_baseline.py": "fbe36b1d584448583bcf3c5b48bec67ad35bb0ce830bb2598a59ac88115927a9",
+    "tests/test_model.py": "f539c03c073fa654bc1785b3a1e994e4edba38df22585c6ea5e3789cb73a086e",
     "tools/claude-review-mcp.mjs": "1df3d7de53abf5d14afb848a2332816d0d28abaf220864fa332c973dc5eab8b1",
     "tools/claude-review-mcp.test.mjs": "715dd62c0a7afd5f1cc27bf1f13481f88686a1b463af281730894332ca19b532"
   },
   "indexed_at_commit": "",
-  "indexed_at_timestamp": "2026-10-02T01:46:25.459569100+00:00",
+  "indexed_at_timestamp": "2026-10-02T02:35:14.695854800+00:00",
   "languages": {
     "javascript": {
       "calls": 0,
@@ -21,15 +27,19 @@
     },
     "markdown": {
       "calls": 0,
-      "nodes": 32
+      "nodes": 46
+    },
+    "python": {
+      "calls": 102,
+      "nodes": 75
     }
   },
   "parser_version": "3.3.1",
   "schema_version": 3,
   "stats": {
-    "total_edges": 28,
-    "total_files": 11,
-    "total_nodes": 35
+    "total_edges": 207,
+    "total_files": 17,
+    "total_nodes": 124
   },
   "vexp_version": "3.3.1"
 }
