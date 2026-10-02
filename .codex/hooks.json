@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"C:/WorkSpace/DriveLicenseSimulatorAIModel/.codex/vexp-hint.sh\"",
+            "commandWindows": "cmd /d /c call \"C:\\WorkSpace\\DriveLicenseSimulatorAIModel\\.codex\\vexp-hint.cmd\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

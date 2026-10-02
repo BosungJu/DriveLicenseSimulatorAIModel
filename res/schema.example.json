@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "sample_rate_hz": 50,
+  "feature_names": ["speed_kmh", "steering_input", "brake_applied"],
+  "continuous_features": ["speed_kmh", "steering_input"],
+  "label_names": ["insufficient_stop", "unstable_steering"]
+}

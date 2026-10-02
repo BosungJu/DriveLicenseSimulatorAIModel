@@ -1,0 +1,26 @@
+{
+  "data": "train/sections.jsonl",
+  "schema": "schema.example.json",
+  "output": "../artifacts/lstm-augmented.pt",
+  "device": "auto",
+  "deterministic": true,
+  "epochs": 20,
+  "batch_size": 32,
+  "hidden_size": 64,
+  "learning_rate": 0.001,
+  "seed": 42,
+  "augmentation_seed": 1000045,
+  "augmentation": {
+    "probability": 0.5,
+    "features": {
+      "speed_kmh": {
+        "bias_max": 0.05,
+        "noise_max": 0.02,
+        "smoothing": 0.1,
+        "min": 0,
+        "max": 110,
+        "protected_values": [0, 1, 20]
+      }
+    }
+  }
+}
