@@ -43,3 +43,9 @@ JSON에서 feature별 bias/noise/smoothing/범위/보호 경계 및 lr/epoch/bat
 CUDA 12.8 인덱스에서 제공하는 requirements 범위의 wheel이 PyTorch 2.11.0+cu128이므로 기존 2.14.1+cpu를 해당 빌드로 교체했습니다. uv 캐시 rename은 Windows 파일 잠금으로 실패했고, pip 직접 설치로 완료했습니다. 프로젝트 가상환경에만 설치했습니다.
 
 검증 환경: Python 3.12.15, PyTorch 2.11.0+cu128, CUDA runtime 12.8, NVIDIA GeForce RTX 4060 Ti. `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`로 테스트 30개 모두 통과했으며 CUDA 테스트도 실제 실행했습니다. GPU 학습/평가/추론, 동일 seed 재학습, CPU checkpoint snapshot, GPU에서 학습한 모델의 CPU 재로드, CLI auto GPU 선택과 CPU 추론을 확인했습니다. 합성 데이터 검증이며 실제 주행 성능 평가는 별도입니다.
+
+## num_layers 설정 추가
+
+LSTM 층 수를 생성자, JSON 설정 및 `--num-layers`로 조절할 수 있게 추가했습니다. 기본값과 기존 Namespace/checkpoint fallback은 1입니다. checkpoint에 실제 층 수를 저장하고 같은 구조로 복원합니다. Claude 정적 검토에서 변경 범위의 correctness 결함은 발견되지 않았습니다.
+
+기존 검증 명령으로 테스트 32개가 모두 통과했습니다. CPU 2층 모델 저장/로드, CUDA 2층 학습·재현성·CPU 재로드, 설정/CLI 우선순위, 잘못된 층 수 거부 및 층 수 필드 없는 기존 checkpoint를 검증했습니다.

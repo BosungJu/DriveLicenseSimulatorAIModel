@@ -127,10 +127,12 @@ class TrainingConfigurationTests(unittest.TestCase):
         self.assertEqual(args.data, str(self.root / "data.jsonl"))
         self.assertEqual(args.output, "override.pt")
         self.assertEqual(args.batch_size, 32)
+        self.assertEqual(args.num_layers, 1)
 
     def test_ParseArgs_InvalidHyperparameters_Fail(self):
         for key, value in (("epochs", 0), ("batch_size", True), ("hidden_size", 1.5),
                            ("learning_rate", float("inf")), ("seed", "bad"),
+                           ("num_layers", 0), ("num_layers", True), ("num_layers", 1.5),
                            ("augmentation_seed", "bad"), ("device", None),
                            ("deterministic", "true"), ("typo", 1)):
             path = self.write_json("config.json", {"data": "data", "schema": "schema", "output": "output", key: value})

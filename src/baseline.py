@@ -282,8 +282,8 @@ class LSTMBaseline:
 
     def fit(self, args):
         """Train a fresh model with resolved settings on the constructor's device and save its best weights."""
-        for key in ("epochs", "batch_size", "hidden_size"):
-            value = getattr(args, key)
+        for key in ("epochs", "batch_size", "hidden_size", "num_layers"):
+            value = getattr(args, key, 1) if key == "num_layers" else getattr(args, key)
             if type(value) is not int or value <= 0:
                 raise ValueError(f"{key} must be a positive integer")
         if type(args.learning_rate) not in (int, float) or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
@@ -295,6 +295,7 @@ class LSTMBaseline:
             return self._fit(args)
 
     def _fit(self, args):
+        num_layers = getattr(args, "num_layers", 1)
         schema = json.loads(Path(args.schema).read_text(encoding="utf-8"))
         sample_rate = schema.get("sample_rate_hz")
         if type(schema.get("schema_version")) is not int or schema["schema_version"] != 1 or isinstance(sample_rate, bool) or not isinstance(sample_rate, (int, float)) or not math.isfinite(sample_rate) or sample_rate <= 0:
@@ -326,7 +327,7 @@ class LSTMBaseline:
         for name, rate in zip(schema["label_names"], prevalence.tolist()):
             if rate in (0.0, 1.0):
                 warnings.warn(f"Training label {name!r} has only one class; discrimination cannot be learned")
-        model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size).to(self.device)
+        model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size, num_layers=num_layers).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
         best_loss = math.inf
         best_state = None
@@ -353,7 +354,7 @@ class LSTMBaseline:
                 best_loss, best_state, best_epoch = metrics["bce"], {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}, epoch + 1
         model.load_state_dict(best_state)
         metrics = {split: evaluate(model, samples, mean, scale, args.batch_size) for split, samples in splits.items() if samples}
-        constant_model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size).to(self.device)
+        constant_model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size, num_layers=num_layers).to(self.device)
         with torch.no_grad():
             constant_model.classifier.weight.zero_()
             constant_model.classifier.bias.copy_(torch.logit(prevalence.clamp(1e-6, 1 - 1e-6)).to(self.device))
@@ -361,7 +362,7 @@ class LSTMBaseline:
         for name, counts in augmentation_stats.items():
             if counts["attempted"] and counts["applied"] / counts["attempted"] < MIN_AUGMENTATION_APPLY_RATE:
                 warnings.warn(f"Augmentation {name!r} applied to less than 10% of attempts; inspect bounds/thresholds and strength")
-        checkpoint = {"format_version": 1, "schema": schema, "hidden_size": args.hidden_size,
+        checkpoint = {"format_version": 1, "schema": schema, "hidden_size": args.hidden_size, "num_layers": num_layers,
                       "mean": mean, "scale": scale, "state_dict": best_state,
                       "seed": args.seed, "best_epoch": best_epoch, "metrics": metrics,
                       "prevalence_baseline": reference_metrics,
@@ -372,6 +373,7 @@ class LSTMBaseline:
                       "torch_version": str(torch.__version__),
                       "python_version": sys.version, "data_sha256": data_sha256}
         checkpoint["training_args"]["device"] = str(self.device)
+        checkpoint["training_args"]["num_layers"] = num_layers
         checkpoint["training_args"]["deterministic"] = getattr(args, "deterministic", True)
         self._model = model
         self._checkpoint = checkpoint
@@ -395,7 +397,8 @@ class LSTMBaseline:
             raise ValueError("Unsupported checkpoint format")
         baseline = cls(device)
         schema = checkpoint["schema"]
-        baseline._model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), checkpoint["hidden_size"]).to(baseline.device)
+        baseline._model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), checkpoint["hidden_size"],
+                                     num_layers=checkpoint.get("num_layers", 1)).to(baseline.device)
         baseline.model.load_state_dict(checkpoint["state_dict"])
         baseline.model.eval()
         baseline._checkpoint = checkpoint
@@ -468,6 +471,7 @@ def parse_args(argv=None):
     training.add_argument("--epochs", type=positive_int)
     training.add_argument("--batch-size", type=positive_int)
     training.add_argument("--hidden-size", type=positive_int)
+    training.add_argument("--num-layers", type=positive_int, help="Number of stacked LSTM layers (default: 1)")
     training.add_argument("--learning-rate", type=positive_float)
     training.add_argument("--seed", type=int)
     training.add_argument("--augmentation-seed", type=int, help="Independent augmentation RNG seed")
@@ -484,7 +488,7 @@ def parse_args(argv=None):
         except ValueError as error:
             parser.error(str(error))
         return args
-    defaults = {"epochs": 20, "batch_size": 32, "hidden_size": 64, "learning_rate": 0.001, "seed": 42,
+    defaults = {"epochs": 20, "batch_size": 32, "hidden_size": 64, "num_layers": 1, "learning_rate": 0.001, "seed": 42,
                 "data": None, "schema": None, "output": None, "augmentation": None, "augmentation_seed": None,
                 "device": "auto", "deterministic": True}
     configured = {}
@@ -502,7 +506,7 @@ def parse_args(argv=None):
         for key, default in defaults.items():
             cli_value = getattr(args, key)
             value = cli_value if cli_value is not None else configured.get(key, default)
-            if key in ("epochs", "batch_size", "hidden_size", "seed"):
+            if key in ("epochs", "batch_size", "hidden_size", "num_layers", "seed"):
                 if type(value) is not int or (key != "seed" and value <= 0):
                     raise ValueError(f"{key} must be {'an integer' if key == 'seed' else 'a positive integer'}")
             if key == "learning_rate" and (type(value) not in (int, float) or not math.isfinite(value) or value <= 0):

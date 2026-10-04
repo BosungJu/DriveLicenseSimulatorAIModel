@@ -69,6 +69,7 @@ loaded.save("artifacts/lstm-copy.pt")
 | learning_rate | Adam learning rate (`--learning-rate`) |
 | device / deterministic | 실행 장치 및 결정론 사용 여부 (`--device`, `--deterministic` / `--no-deterministic`) |
 | epochs / batch_size / hidden_size | epoch 수, batch 크기, LSTM 은닉 크기 |
+| num_layers | 쌓는 LSTM 층 수 (`--num-layers`); 기본값 1, 양의 정수 |
 | seed | 모델 초기화, 섞기, 증대의 재현성 seed |
 | augmentation_seed | 증대용 seed (`--augmentation-seed`); 생략 시 seed + 1,000,003을 2^63으로 나눈 나머지 |
 | output | 모델마다 지정하는 checkpoint 저장 경로; 같은 경로는 덮어씀 |
@@ -80,6 +81,8 @@ loaded.save("artifacts/lstm-copy.pt")
 | features.<이름>.protected_values | 넘거나 이탈하면 안 되는 판정 경계값 목록 |
 
 설정 파일의 data/schema/output 상대 경로는 **설정 파일 폴더** 기준입니다. 명령줄에서 지정하는 상대 경로는 현재 작업 폴더 기준이며, 명령줄 값이 JSON 값보다 우선합니다. JSON 변수 이름은 위처럼 snake_case입니다. 알 수 없는 설정 키와 잘못된 강도/학습 인자는 오류로 처리합니다. 설정 변경은 다음 학습 실행에 적용됩니다. 각 checkpoint에 실제 하이퍼파라미터와 증대 설정을 저장합니다.
+
+예를 들어 `"hidden_size": 64, "num_layers": 2`는 은닉 크기 64인 LSTM을 2층 쌓습니다. 명령줄에서는 `train --config res/train-config.example.json --num-layers 2 --output artifacts/lstm-2layers.pt`로 변경할 수 있습니다. Python에서는 `SectionLSTM(feature_count=3, label_count=2, hidden_size=64, num_layers=2)` 또는 fit 전 `settings.num_layers = 2`를 사용합니다. checkpoint에 층 수를 저장하고 load 시 같은 구조를 복원합니다. num_layers가 없는 기존 checkpoint와 설정은 1층으로 처리합니다.
 
 증대는 train batch를 만들 때 원본 단위에서 새로 생성하고 이후 원본 train 통계로 정규화합니다. 파일이나 라벨은 수정하지 않습니다. val/test 평가와 추론은 원본을 사용합니다. 증대 표본을 파일로 여러 배 복제하지 않으며, epoch마다 다른 변형을 제공합니다. 증대 난수는 별도 generator를 사용합니다.
 

@@ -49,10 +49,13 @@ class DeviceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings.json"
             path.write_text(json.dumps({"data": "data", "schema": "schema", "output": "model",
-                                        "device": "cuda", "deterministic": True}), encoding="utf-8")
-            args = parse_args(["train", "--config", str(path), "--device", "cpu", "--no-deterministic"])
+                                        "device": "cuda", "deterministic": True, "num_layers": 2}), encoding="utf-8")
+            configured = parse_args(["train", "--config", str(path)])
+            self.assertEqual(configured.num_layers, 2)
+            args = parse_args(["train", "--config", str(path), "--device", "cpu", "--no-deterministic", "--num-layers", "3"])
             self.assertEqual(args.device, "cpu")
             self.assertFalse(args.deterministic)
+            self.assertEqual(args.num_layers, 3)
 
 
 class LSTMBaselineTests(unittest.TestCase):
@@ -99,7 +102,8 @@ class LSTMBaselineTests(unittest.TestCase):
         self.assertEqual(baseline.evaluate(self.data_path)["samples"], 6)
         predictions = baseline.predict(self.data_path)
         legacy = torch.load(args.output, weights_only=True)
-        for key in ("device", "cuda_version"):
+        self.assertEqual(baseline.model.lstm.num_layers, 1)
+        for key in ("device", "cuda_version", "num_layers"):
             del legacy[key]
         legacy_path = self.root / "legacy.pt"
         torch.save(legacy, legacy_path)
@@ -112,7 +116,8 @@ class LSTMBaselineTests(unittest.TestCase):
     def test_ClassApi_InvalidEditedSettings_FailBeforeTraining(self):
         baseline = LSTMBaseline("cpu")
         for name, value in (("epochs", 0), ("batch_size", True), ("hidden_size", -1),
-                            ("learning_rate", float("nan")), ("deterministic", "true")):
+                            ("learning_rate", float("nan")), ("deterministic", "true"),
+                            ("num_layers", 0), ("num_layers", True), ("num_layers", 1.5)):
             args = self.settings()
             setattr(args, name, value)
             with self.subTest(name=name), self.assertRaises(ValueError):
@@ -148,12 +153,15 @@ class LSTMBaselineTests(unittest.TestCase):
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA-enabled PyTorch and NVIDIA GPU required")
     def test_CudaTrainingEvaluationPrediction_UsesGpuAndLoadsCheckpointOnCpu(self):
         args = self.settings("cuda:0")
+        args.num_layers = 2
         baseline = LSTMBaseline("cuda:0")
         result = baseline.fit(args)
         self.assertEqual(result["device"], "cuda:0")
         self.assertEqual(next(baseline.model.parameters()).device.type, "cuda")
         self.assertEqual(baseline.evaluate(self.data_path)["samples"], 6)
         checkpoint = torch.load(args.output, weights_only=True)
+        self.assertEqual(checkpoint["num_layers"], 2)
+        self.assertEqual(baseline.model.lstm.num_layers, 2)
         self.assertTrue(all(value.device.type == "cpu" for value in checkpoint["state_dict"].values()))
         self.assertEqual(checkpoint["mean"].device.type, "cpu")
         gpu_predictions = baseline.predict(self.data_path)
@@ -167,6 +175,24 @@ class LSTMBaselineTests(unittest.TestCase):
             torch.testing.assert_close(first_state[key], second_state[key], rtol=0, atol=0)
         reloaded_gpu = LSTMBaseline.load(args.output, "cuda:0")
         self.assertEqual(gpu_predictions, reloaded_gpu.predict(self.data_path))
+
+    def test_TwoLayerCpuModel_CheckpointRestoresArchitectureAndPredictions(self):
+        args = self.settings()
+        args.num_layers = 2
+        baseline = LSTMBaseline("cpu")
+        baseline.fit(args)
+        checkpoint = torch.load(args.output, weights_only=True)
+        self.assertEqual(checkpoint["num_layers"], 2)
+        self.assertEqual(checkpoint["training_args"]["num_layers"], 2)
+        self.assertIn("lstm.weight_ih_l1", checkpoint["state_dict"])
+        loaded = LSTMBaseline.load(args.output, "cpu")
+        self.assertEqual(loaded.model.lstm.num_layers, 2)
+        self.assertEqual(baseline.predict(self.data_path), loaded.predict(self.data_path))
+
+    def test_SectionLSTM_InvalidLayerCounts_Fail(self):
+        for num_layers in (0, -1, True, 1.5):
+            with self.subTest(num_layers=num_layers), self.assertRaisesRegex(ValueError, "num_layers"):
+                SectionLSTM(2, 1, num_layers=num_layers)
 
 
 if __name__ == "__main__":
