@@ -10,7 +10,7 @@
     "README.md": "c8586cf5fc384a33dfa4fd3cf44cfceec5b93de51c70af6bb61a73c6a261a167",
     "docs/lstm-baseline.md": "43ee0b7f00390739847863157d7a40ef73a986ed8ea719607877888a8cb41ba4",
     "docs/lstm-review.md": "bd0321ba76bcd3be05de52a99609610ffef057fadf833f609d3c892b5f59c35c",
-    "src/baseline.py": "421c6d0b0ed2002ca1f6836489a5f28507cce193707fa718aa59fe913e823927",
+    "src/baseline.py": "fcdcbe242abf4949529d895316c592d71ccfc316bafe10ff950ad0a0759a6867",
     "src/model.py": "e293c54becda355a7fdcd1e7d8ba7863b12253c140c8222e95c93e950bead136",
     "tests/test_augmentation.py": "61027b5f244310c74ec334c298f524dd5b643eb91d59f595314f2ff05a29a272",
     "tests/test_baseline.py": "fbe36b1d584448583bcf3c5b48bec67ad35bb0ce830bb2598a59ac88115927a9",
@@ -18,8 +18,8 @@
     "tools/claude-review-mcp.mjs": "1df3d7de53abf5d14afb848a2332816d0d28abaf220864fa332c973dc5eab8b1",
     "tools/claude-review-mcp.test.mjs": "715dd62c0a7afd5f1cc27bf1f13481f88686a1b463af281730894332ca19b532"
   },
-  "indexed_at_commit": "4bb42fdcbb2fb0a7822b9bfd6059b81a3b5dd35b",
-  "indexed_at_timestamp": "2026-10-04T16:34:37.801759700+00:00",
+  "indexed_at_commit": "54b5b7c7553ecece9910826b438dc62f2f152c08",
+  "indexed_at_timestamp": "2026-10-14T04:29:31.081121900+00:00",
   "languages": {
     "javascript": {
       "calls": 0,
@@ -30,16 +30,16 @@
       "nodes": 45
     },
     "python": {
-      "calls": 106,
-      "nodes": 77
+      "calls": 101,
+      "nodes": 78
     }
   },
   "parser_version": "3.3.2",
   "schema_version": 3,
   "stats": {
-    "total_edges": 212,
+    "total_edges": 198,
     "total_files": 17,
-    "total_nodes": 125
+    "total_nodes": 126
   },
   "vexp_version": "3.3.1"
 }

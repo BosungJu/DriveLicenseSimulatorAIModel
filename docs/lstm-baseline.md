@@ -82,7 +82,7 @@ loaded.save("artifacts/lstm-copy.pt")
 
 설정 파일의 data/schema/output 상대 경로는 **설정 파일 폴더** 기준입니다. 명령줄에서 지정하는 상대 경로는 현재 작업 폴더 기준이며, 명령줄 값이 JSON 값보다 우선합니다. JSON 변수 이름은 위처럼 snake_case입니다. 알 수 없는 설정 키와 잘못된 강도/학습 인자는 오류로 처리합니다. 설정 변경은 다음 학습 실행에 적용됩니다. 각 checkpoint에 실제 하이퍼파라미터와 증대 설정을 저장합니다.
 
-예를 들어 `"hidden_size": 64, "num_layers": 2`는 은닉 크기 64인 LSTM을 2층 쌓습니다. 명령줄에서는 `train --config res/train-config.example.json --num-layers 2 --output artifacts/lstm-2layers.pt`로 변경할 수 있습니다. Python에서는 `SectionLSTM(feature_count=3, label_count=2, hidden_size=64, num_layers=2)` 또는 fit 전 `settings.num_layers = 2`를 사용합니다. checkpoint에 층 수를 저장하고 load 시 같은 구조를 복원합니다. num_layers가 없는 기존 checkpoint와 설정은 1층으로 처리합니다.
+예를 들어 `"hidden_size": 64, "num_layers": 2`는 은닉 크기 64인 LSTM을 2층 쌓습니다. 명령줄에서는 `train --config res/train-config.example.json --num-layers 2 --output artifacts/lstm-2layers.pt`로 변경할 수 있습니다. Python에서는 `SectionLSTM(feature_count=6, label_count=2, hidden_size=64, num_layers=2)` 또는 fit 전 `settings.num_layers = 2`를 사용합니다. checkpoint에 층 수를 저장하고 load 시 같은 구조를 복원합니다. num_layers가 없는 기존 checkpoint와 설정은 1층으로 처리합니다.
 
 증대는 train batch를 만들 때 원본 단위에서 새로 생성하고 이후 원본 train 통계로 정규화합니다. 파일이나 라벨은 수정하지 않습니다. val/test 평가와 추론은 원본을 사용합니다. 증대 표본을 파일로 여러 배 복제하지 않으며, epoch마다 다른 변형을 제공합니다. 증대 난수는 별도 generator를 사용합니다.
 
@@ -101,13 +101,13 @@ feature별 bias는 `[-bias_max, +bias_max]` 균등분포로 구간당 한 번 �
 `schema.json` 예시:
 
 ```json
-{"schema_version":1,"sample_rate_hz":50,"feature_names":["speed_kmh","steering_input","brake_applied"],"label_names":["insufficient_stop","unstable_steering"]}
+{"schema_version":1,"sample_rate_hz":50,"feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_applied"],"label_names":["insufficient_stop","unstable_steering"]}
 ```
 
 JSONL의 각 행은 구간 하나입니다. 학습 행 예시:
 
 ```json
-{"schema_version":1,"sample_rate_hz":50,"run_id":"anonymous-run-001","section_id":2,"split":"train","feature_names":["speed_kmh","steering_input","brake_applied"],"features":[[4.0,0.1,0.0],[0.0,0.0,1.0]],"label_names":["insufficient_stop","unstable_steering"],"labels":[1,0]}
+{"schema_version":1,"sample_rate_hz":50,"run_id":"anonymous-run-001","section_id":2,"split":"train","feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_applied"],"features":[[4.0,-0.5,3.0,-0.25,-0.5,1.0],[0.0,0.0,0.0,0.0,0.5,0.0]],"label_names":["insufficient_stop","unstable_steering"],"labels":[1,0]}
 ```
 
 - 관측은 고정 Hz로 수집하거나 사전에 리샘플합니다. 시간 간격은 메타데이터만으로 검증할 수 없으므로 수집 계층이 보장해야 합니다. 단위와 실제 적용 입력의 범위를 feature 이름 및 수집 문서로 고정하세요. 50 Hz는 예시입니다.
@@ -117,6 +117,27 @@ JSONL의 각 행은 구간 하나입니다. 학습 행 예시:
 - 맵·물리·판정 설정 버전을 통일한 데이터로 시작하세요. 감점 결과나 라벨을 직접 드러내는 값을 feature로 넣으면 평가가 왜곡될 수 있습니다.
 - 추론 행에는 split/label_names/labels가 필요 없습니다. run_id, feature_names, features, schema_version, sample_rate_hz는 필수입니다.
 
+### Unity 자동차 입력 기록과 feature 매핑
+
+`DriverLicenseSimulator`의 `CarMoveInput`에서 읽은 조향·가속·제동 입력을 `CarController` 읽기 전용 속성으로 노출합니다. `ReportManager`는 실행 순서 100으로 기본 순서의 차량 입력 처리 뒤에 기록하며, 같은 FixedUpdate 시점의 입력 표본이 있는 활성 컨트롤러만 사용합니다. 컨트롤러가 없거나 입력이 오래됐으면 물리 상태 기록은 유지하고 세 입력 열을 빈칸으로 내보냅니다. 새 입력 모델은 빈칸을 오류로 거부하며, 물리 feature만 사용하는 기존 모델은 계속 사용할 수 있습니다. Rigidbody까지 없으면 기록 시각을 진행하고 가속도 차분 이력을 초기화해 복구 첫 표본의 가속도를 0으로 기록합니다. Inspector에서 실행 순서를 별도 지정했다면 CarController가 ReportManager보다 앞서도록 확인하세요.
+
+| 모델 feature 순서 | CSV / 원본 의미 |
+| --- | --- |
+| speed_kmh | Rigidbody 전체 속력, km/h, 후진 여부를 구분하지 않음 |
+| accel_mps2 | 차량 forward에 투영한 속도의 시간 차분, m/s²; 세션 첫 표본은 0 |
+| yaw_rate_dps | 월드 Y축 각속도, 도/초 |
+| steering_input | CarMoveInput.Steering, -1~1의 조향 명령 |
+| throttle_input | CarMoveInput.Throttle, -1~1의 부호 있는 구동 명령; 음수는 후진 방향 명령 |
+| brake_applied | CarMoveInput.IsBraking, CSV에서 false=0 / true=1 |
+
+steering_input은 부드럽게 제한된 실제 휠 조향각이 아니며, throttle_input은 실제 모터 토크가 아닙니다. 시동이 꺼졌어도 사용자의 가속 입력은 기록될 수 있습니다. `brake_applied`는 현재 bool 제동 분기를 의미하며 압력 측정값이 아닙니다. 상태는 차량 제어 코드 이후, 다음 물리 시뮬레이션 이전에 기록하므로 speed_kmh에는 CarController.Brake의 `linearVelocity *= 0.98` 효과가 이미 반영됩니다. heading_deg/pos_x/pos_z는 기존 CSV에 유지하지만 기본 모델 feature에서 제외합니다. time_s/point_number는 시간과 구간 메타데이터로 사용합니다.
+
+CSV에 세 입력 열을 추가했고 기존 열과 구간 결과 JSON은 유지합니다. AI의 `session_predict.py`는 checkpoint에 저장된 feature 순서로 열을 선택하며, 사용한 조향/가속 입력 범위와 이진 제동 값을 검사합니다. 입력 feature를 사용하는 모델에서는 time_s 간격도 검사해 누락 프레임을 조용히 압축하지 않습니다(기록의 3자리 반올림 오차 허용). 입력 열이 없는 오래된 CSV에 0이나 추정 입력을 채우지 않습니다. 새로운 6-feature 모델은 라벨을 준비한 새 기록으로 재학습해야 하며 기존 checkpoint의 스키마와 가중치를 자동으로 변경하지 않습니다. 예시 라벨 정의는 계속 전문가 검토가 필요합니다.
+
+Unity 수동 확인: 코스 주행 중 조향 양방향, 양수·음수 구동, 제동 on/off를 수행하고 코스 종료 후 AIReport 세션의 driving_log.csv 마지막 세 열을 확인하세요. EditMode Test Runner에서 `DrivingReportCsvTests`를 실행하면 열 순서, 부호 있는 입력, 0/1 제동, 문화권에 무관한 숫자 형식을 검증합니다.
+
+입력을 요구하는 모델에서 한 표본이라도 입력이 비어 있으면 세션 전체 추론을 실패시키며 부분 결과를 만들지 않습니다. 물리 feature만 사용하는 기존 모델은 이전 호환 경로를 유지하므로 time_s 간격 검사는 적용하지 않습니다.
+
 ## 학습과 결과 해석
 
 정규화는 train의 실제 프레임만 사용합니다. 표준편차가 1e-6보다 작은 feature는 scale 1을 사용해 상수 feature의 입력 증폭을 피합니다. 가변 길이 배치는 packing으로 패딩을 제외합니다. 최소 val BCE를 기록한 가중치를 저장하고 test는 선택 완료 후 평가합니다. CPU/CUDA에서 seed와 결정적 알고리즘을 설정합니다. 환경 간 비트 단위 재현성은 보장하지 않습니다.
@@ -125,4 +146,4 @@ JSONL의 각 행은 구간 하나입니다. 학습 행 예시:
 
 Checkpoint는 스키마, 정규화, 가중치, 선택 epoch, 실행 인자, 버전, 데이터 SHA-256 및 평가 결과를 포함합니다. 추론은 checkpoint 통계를 재사용하고 개선점 후보 확률만 JSONL로 출력합니다. 이 확률은 보정된 신뢰도나 관측 근거가 아닙니다. 실제 안내는 별도 근거 확인과 규칙 경로가 필요합니다.
 
-데이터 전체를 메모리에 읽는 작은 baseline입니다. 긴 구간은 수집 단계에서 메모리 예산을 정하고 길이를 관리하세요. 앞부분 사건을 놓치는지와 불균형 라벨 성능은 실제 데이터에서 확인해야 합니다. Unity 기록기·런타임 연결은 포함하지 않습니다.
+데이터 전체를 메모리에 읽는 작은 baseline입니다. 긴 구간은 수집 단계에서 메모리 예산을 정하고 길이를 관리하세요. 앞부분 사건을 놓치는지와 불균형 라벨 성능은 실제 데이터에서 확인해야 합니다. Unity 기록기 CSV와 오프라인 구간 추론을 연결하며 실시간 모델 호출은 포함하지 않습니다.

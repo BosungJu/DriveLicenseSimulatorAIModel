@@ -280,6 +280,11 @@ class LSTMBaseline:
     def model(self):
         return self._model
 
+    @property
+    def schema(self):
+        """Feature/label names and sample rate of the loaded checkpoint, or None before fit/load."""
+        return copy.deepcopy(self._checkpoint["schema"]) if self._checkpoint is not None else None
+
     def fit(self, args):
         """Train a fresh model with resolved settings on the constructor's device and save its best weights."""
         for key in ("epochs", "batch_size", "hidden_size", "num_layers"):
