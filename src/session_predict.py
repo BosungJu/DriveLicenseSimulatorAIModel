@@ -24,6 +24,9 @@ POINT_NUMBER_COLUMN = "point_number"
 SAMPLE_RATE_TOLERANCE_HZ = 0.01
 DEFAULT_LABEL_THRESHOLD = 0.5
 CONTROL_INPUT_RANGES = {"steering_input": (-1.0, 1.0), "throttle_input": (-1.0, 1.0)}
+# Unity exports driver inputs and vehicle system state (VehicleSystems toggles) as 0/1 flags.
+BINARY_FEATURES = ("brake_applied", "engine_on", "left_signal_on", "right_signal_on", "hazard_on", "headlight_on",
+                   "high_beam_on")
 # Unity exports time_s to three decimals, giving at most 0.001 seconds of interval rounding.
 SAMPLE_TIME_TOLERANCE_SECONDS = 0.0011
 
@@ -43,7 +46,7 @@ def build_section_records(log_rows, feature_names, sample_rate_hz, run_id):
 
     records = []
     previous_sample_time = None
-    uses_control_inputs = any(name in CONTROL_INPUT_RANGES or name == "brake_applied" for name in feature_names)
+    uses_control_inputs = any(name in CONTROL_INPUT_RANGES or name in BINARY_FEATURES for name in feature_names)
     for row in log_rows:
         section_id = int(row[POINT_NUMBER_COLUMN])
         unavailable_features = [name for name in feature_names if row.get(name) is None or not str(row[name]).strip()]
@@ -69,8 +72,8 @@ def build_section_records(log_rows, feature_names, sample_rate_hz, run_id):
                 minimum, maximum = CONTROL_INPUT_RANGES[name]
                 if not minimum <= value <= maximum:
                     raise ValueError(f"Control input {name} at section {section_id} must be in [{minimum}, {maximum}]")
-            if name == "brake_applied" and value not in (0.0, 1.0):
-                raise ValueError(f"brake_applied at section {section_id} must be 0 or 1")
+            if name in BINARY_FEATURES and value not in (0.0, 1.0):
+                raise ValueError(f"{name} at section {section_id} must be 0 or 1")
 
         if not records or records[-1]["section_id"] != section_id:
             records.append({"schema_version": 1, "sample_rate_hz": sample_rate_hz, "run_id": run_id,

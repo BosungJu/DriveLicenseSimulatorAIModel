@@ -101,13 +101,13 @@ feature별 bias는 `[-bias_max, +bias_max]` 균등분포로 구간당 한 번 �
 `schema.json` 예시:
 
 ```json
-{"schema_version":1,"sample_rate_hz":50,"feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_applied"],"label_names":["insufficient_stop","unstable_steering"]}
+{"schema_version":1,"sample_rate_hz":50,"feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_applied","engine_on","left_signal_on","right_signal_on","hazard_on","headlight_on","high_beam_on"],"label_names":["insufficient_stop","unstable_steering"]}
 ```
 
 JSONL의 각 행은 구간 하나입니다. 학습 행 예시:
 
 ```json
-{"schema_version":1,"sample_rate_hz":50,"run_id":"anonymous-run-001","section_id":2,"split":"train","feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_applied"],"features":[[4.0,-0.5,3.0,-0.25,-0.5,1.0],[0.0,0.0,0.0,0.0,0.5,0.0]],"label_names":["insufficient_stop","unstable_steering"],"labels":[1,0]}
+{"schema_version":1,"sample_rate_hz":50,"run_id":"anonymous-run-001","section_id":2,"split":"train","feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_applied","engine_on","left_signal_on","right_signal_on","hazard_on","headlight_on","high_beam_on"],"features":[[4.0,-0.5,3.0,-0.25,-0.5,1,1,1,0,0,1,0],[0.0,0.0,0.0,0.0,0.5,0,1,0,0,0,0,0]],"label_names":["insufficient_stop","unstable_steering"],"labels":[1,0]}
 ```
 
 - 관측은 고정 Hz로 수집하거나 사전에 리샘플합니다. 시간 간격은 메타데이터만으로 검증할 수 없으므로 수집 계층이 보장해야 합니다. 단위와 실제 적용 입력의 범위를 feature 이름 및 수집 문서로 고정하세요. 50 Hz는 예시입니다.
@@ -129,10 +129,20 @@ JSONL의 각 행은 구간 하나입니다. 학습 행 예시:
 | steering_input | CarMoveInput.Steering, -1~1의 조향 명령 |
 | throttle_input | CarMoveInput.Throttle, -1~1의 부호 있는 구동 명령; 음수는 후진 방향 명령 |
 | brake_applied | CarMoveInput.IsBraking, CSV에서 false=0 / true=1 |
+| engine_on | VehicleSystems.EngineOn, 0/1 |
+| left_signal_on / right_signal_on | VehicleSystems.LeftSignalOn / RightSignalOn, 0/1; 깜빡임 위상이 아니라 켜짐 상태 |
+| hazard_on | VehicleSystems.HazardOn, 0/1; 시동이 꺼져도 켤 수 있음 |
+| headlight_on / high_beam_on | VehicleSystems.HeadlightOn / HighBeamOn, 0/1 |
+
+차량 시스템 상태 6개는 `CarController.systems`에 연결된 활성 `VehicleSystems`에서 읽습니다. 연결이 없거나 비활성이면 CSV 해당 열은 빈칸이며, 12-feature 모델은 이를 거부하고 6-feature 이하 기존 checkpoint는 계속 해당 열을 무시합니다. 와이퍼(`WiperController`)는 차량 컨트롤러와 연결된 참조가 없어 포함하지 않았습니다. 상태 토글은 Update에서 일어나므로 표본에는 해당 물리 스텝 직전의 최신 상태가 기록됩니다. 이진 상태 feature는 `continuous_features`에 넣지 마세요.
+
+### Unity 학습 데이터 수집
+
+`TrainingDataCollector`(Unity `Assets/Scripts/AI_Report`)를 `ReportManager`와 같은 오브젝트에 붙이면, 코스 완료 후 세션 폴더에 `training_sections.jsonl`을 함께 씁니다. 각 행은 위 데이터 계약 v1의 라벨 없는 구간 레코드이며 run_id(세션 폴더 이름 + 무작위 8자리), 선택적 익명 driver_id, section_id, start_time_s를 포함합니다. 값은 driving_log.csv와 같은 소수 3자리 반올림입니다. 입력·상태 결측, NaN, 누락 프레임(1.5스텝 초과 간격)이 있는 구간은 레코드를 만들지 않고 건너뜁니다. 학습 데이터는 세션 파일들을 합친 뒤 각 행에 split/label_names/labels를 추가해 만듭니다. 코스를 완료하지 않고 초기화한 주행은 저장되지 않습니다.
 
 steering_input은 부드럽게 제한된 실제 휠 조향각이 아니며, throttle_input은 실제 모터 토크가 아닙니다. 시동이 꺼졌어도 사용자의 가속 입력은 기록될 수 있습니다. `brake_applied`는 현재 bool 제동 분기를 의미하며 압력 측정값이 아닙니다. 상태는 차량 제어 코드 이후, 다음 물리 시뮬레이션 이전에 기록하므로 speed_kmh에는 CarController.Brake의 `linearVelocity *= 0.98` 효과가 이미 반영됩니다. heading_deg/pos_x/pos_z는 기존 CSV에 유지하지만 기본 모델 feature에서 제외합니다. time_s/point_number는 시간과 구간 메타데이터로 사용합니다.
 
-CSV에 세 입력 열을 추가했고 기존 열과 구간 결과 JSON은 유지합니다. AI의 `session_predict.py`는 checkpoint에 저장된 feature 순서로 열을 선택하며, 사용한 조향/가속 입력 범위와 이진 제동 값을 검사합니다. 입력 feature를 사용하는 모델에서는 time_s 간격도 검사해 누락 프레임을 조용히 압축하지 않습니다(기록의 3자리 반올림 오차 허용). 입력 열이 없는 오래된 CSV에 0이나 추정 입력을 채우지 않습니다. 새로운 6-feature 모델은 라벨을 준비한 새 기록으로 재학습해야 하며 기존 checkpoint의 스키마와 가중치를 자동으로 변경하지 않습니다. 예시 라벨 정의는 계속 전문가 검토가 필요합니다.
+CSV에 세 입력 열을 추가했고 기존 열과 구간 결과 JSON은 유지합니다. AI의 `session_predict.py`는 checkpoint에 저장된 feature 순서로 열을 선택하며, 사용한 조향/가속 입력 범위와 이진 제동·차량 상태 값을 검사합니다. 입력 feature를 사용하는 모델에서는 time_s 간격도 검사해 누락 프레임을 조용히 압축하지 않습니다(기록의 3자리 반올림 오차 허용). 입력 열이 없는 오래된 CSV에 0이나 추정 입력을 채우지 않습니다. 새로운 12-feature 모델은 라벨을 준비한 새 기록으로 재학습해야 하며 기존 checkpoint의 스키마와 가중치를 자동으로 변경하지 않습니다. 예시 라벨 정의는 계속 전문가 검토가 필요합니다.
 
 Unity 수동 확인: 코스 주행 중 조향 양방향, 양수·음수 구동, 제동 on/off를 수행하고 코스 종료 후 AIReport 세션의 driving_log.csv 마지막 세 열을 확인하세요. EditMode Test Runner에서 `DrivingReportCsvTests`를 실행하면 열 순서, 부호 있는 입력, 0/1 제동, 문화권에 무관한 숫자 형식을 검증합니다.
 

@@ -1,25 +1,30 @@
 {
   "file_hashes": {
-    ".claude/CLAUDE.md": "9ac997cab89bf1c178b9ee8b5901f7cfad8d7bc1183f0dd7663fcafc4d380cf4",
-    ".claude/hooks/vexp-hint.sh": "ecfdeae78f54692eedde52996c37990f1edea49afe93cab4ae1cab7c4fb2c7a1",
-    ".claude/hooks/vexp-restore.sh": "250815a0d6e1f0caa0719c568268bc47cea2904e4f9c08b58172f14c68643513",
-    ".codex/vexp-hint.sh": "37ee5e6ca3682dca9f55463c26c5093174f61c82684609fe2c9c122d29a3d6fb",
-    "AGENTS.md": "9ac997cab89bf1c178b9ee8b5901f7cfad8d7bc1183f0dd7663fcafc4d380cf4",
+    ".claude/CLAUDE.md": "ff7019661a7d0ad1310c6555deb7e4688471ebb440c646a4bfff0dcc6ac1abcf",
+    ".claude/hooks/vexp-hint.sh": "41674da3dc1a2bb3ba98da3b51e51f4cdab1295bfdf9a6c289a3b215b06816c4",
+    ".claude/hooks/vexp-restore.sh": "12fd8c5ea21b89feaa7d2639856489cf1598cce3e299ea92417d16651a0ade57",
+    ".codex/vexp-hint.sh": "c02416b0fdf0fbd02bc71e7fdcf4809fcc2631a120473eb4d2f3775915be49ad",
+    "AGENTS.md": "ff7019661a7d0ad1310c6555deb7e4688471ebb440c646a4bfff0dcc6ac1abcf",
     "AI_Development_Context.md": "6adf0c0b21c12a4a452823b8224a8f76c252aa1e08ff04a9b5910564e73c0f95",
     "CLAUDE.md": "e7853d902778dad2a349217bab21fa5d606cb23551d3cdb009f21cc3249f81cd",
     "README.md": "c8586cf5fc384a33dfa4fd3cf44cfceec5b93de51c70af6bb61a73c6a261a167",
-    "docs/lstm-baseline.md": "43ee0b7f00390739847863157d7a40ef73a986ed8ea719607877888a8cb41ba4",
+    "docs/lstm-baseline.md": "e37cd01c5839032dff164142b79ec775986475f83a106a731a8d0511bc768076",
     "docs/lstm-review.md": "bd0321ba76bcd3be05de52a99609610ffef057fadf833f609d3c892b5f59c35c",
+    "docs/unity-input-review.md": "4b937ca14fd7afe18495f00e8e26e9621984fdaeb7e3d20cb35681ce2f7ca4cb",
     "src/baseline.py": "fcdcbe242abf4949529d895316c592d71ccfc316bafe10ff950ad0a0759a6867",
     "src/model.py": "e293c54becda355a7fdcd1e7d8ba7863b12253c140c8222e95c93e950bead136",
+    "src/report.py": "3464b451d4ad1b1b56fa1c8ac7a493a02144707b03cc4caab76f0a38f113f50d",
+    "src/session_predict.py": "e542bb085a8250c2a647c0e7d0427e1dd003447f5bb3559b6b2245ade943d459",
     "tests/test_augmentation.py": "61027b5f244310c74ec334c298f524dd5b643eb91d59f595314f2ff05a29a272",
     "tests/test_baseline.py": "fbe36b1d584448583bcf3c5b48bec67ad35bb0ce830bb2598a59ac88115927a9",
     "tests/test_model.py": "76c6133bd519ff728db3cf502bbf5a7c170a0143dcc310b3c0ecaa473ea51abd",
+    "tests/test_session_report.py": "6309c3ae54b65896d1c47d25d440413d6adfb9b35af600a3de776b17e28dfcfc",
+    "tests/test_unity_input_features.py": "b05af8bda948cf59e60784dc114828c6c8eed42de25d99ba07f12f3e55b16b16",
     "tools/claude-review-mcp.mjs": "1df3d7de53abf5d14afb848a2332816d0d28abaf220864fa332c973dc5eab8b1",
     "tools/claude-review-mcp.test.mjs": "715dd62c0a7afd5f1cc27bf1f13481f88686a1b463af281730894332ca19b532"
   },
   "indexed_at_commit": "54b5b7c7553ecece9910826b438dc62f2f152c08",
-  "indexed_at_timestamp": "2026-10-14T04:29:31.081121900+00:00",
+  "indexed_at_timestamp": "2026-10-14T05:03:58.415962500+00:00",
   "languages": {
     "javascript": {
       "calls": 0,
@@ -27,19 +32,19 @@
     },
     "markdown": {
       "calls": 0,
-      "nodes": 45
+      "nodes": 51
     },
     "python": {
-      "calls": 101,
-      "nodes": 78
+      "calls": 206,
+      "nodes": 118
     }
   },
   "parser_version": "3.3.2",
   "schema_version": 3,
   "stats": {
-    "total_edges": 198,
-    "total_files": 17,
-    "total_nodes": 126
+    "total_edges": 337,
+    "total_files": 22,
+    "total_nodes": 172
   },
   "vexp_version": "3.3.1"
 }
