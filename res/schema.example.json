@@ -1,8 +1,10 @@
 {
   "schema_version": 1,
   "sample_rate_hz": 50,
-  "feature_names": ["speed_kmh", "accel_mps2", "yaw_rate_dps", "steering_input", "throttle_input", "brake_applied",
-                    "engine_on", "left_signal_on", "right_signal_on", "hazard_on", "headlight_on", "high_beam_on"],
-  "continuous_features": ["speed_kmh", "accel_mps2", "yaw_rate_dps", "steering_input", "throttle_input"],
+  "feature_names": ["speed_kmh", "accel_mps2", "yaw_rate_dps", "steering_input", "throttle_input", "brake_input",
+                    "gear_park", "gear_reverse", "gear_neutral", "gear_drive", "parking_brake_on",
+                    "engine_on", "left_signal_on", "right_signal_on", "hazard_on", "headlight_on", "high_beam_on",
+                    "seat_belt_on", "horn_on"],
+  "continuous_features": ["speed_kmh", "accel_mps2", "yaw_rate_dps", "steering_input", "throttle_input", "brake_input"],
   "label_names": ["insufficient_stop", "unstable_steering"]
 }

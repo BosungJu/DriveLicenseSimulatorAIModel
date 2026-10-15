@@ -23,10 +23,15 @@ POINT_NUMBER_COLUMN = "point_number"
 # Unity writes 1 / Time.fixedDeltaTime as float, so 50 Hz may arrive as 49.99999.
 SAMPLE_RATE_TOLERANCE_HZ = 0.01
 DEFAULT_LABEL_THRESHOLD = 0.5
-CONTROL_INPUT_RANGES = {"steering_input": (-1.0, 1.0), "throttle_input": (-1.0, 1.0)}
-# Unity exports driver inputs and vehicle system state (VehicleSystems toggles) as 0/1 flags.
-BINARY_FEATURES = ("brake_applied", "engine_on", "left_signal_on", "right_signal_on", "hazard_on", "headlight_on",
-                   "high_beam_on")
+# Unity CarController: steering is signed, pedals are analog 0~1; driving direction comes from the gear.
+CONTROL_INPUT_RANGES = {"steering_input": (-1.0, 1.0), "throttle_input": (0.0, 1.0), "brake_input": (0.0, 1.0)}
+# Pre-analog schemas (marked by brake_applied) recorded reverse as a negative throttle.
+PRE_ANALOG_THROTTLE_RANGE = (-1.0, 1.0)
+# Gear is one-hot encoded; exactly one gear column is 1 in every sample.
+GEAR_FEATURES = ("gear_park", "gear_reverse", "gear_neutral", "gear_drive")
+# Unity exports the parking brake and VehicleSystems toggles as 0/1 flags (brake_applied is the pre-analog brake).
+BINARY_FEATURES = GEAR_FEATURES + ("brake_applied", "parking_brake_on", "engine_on", "left_signal_on", "right_signal_on",
+                                   "hazard_on", "headlight_on", "high_beam_on", "seat_belt_on", "horn_on")
 # Unity exports time_s to three decimals, giving at most 0.001 seconds of interval rounding.
 SAMPLE_TIME_TOLERANCE_SECONDS = 0.0011
 
@@ -34,6 +39,12 @@ SAMPLE_TIME_TOLERANCE_SECONDS = 0.0011
 def read_driving_log(path):
     with open(path, newline="", encoding="utf-8-sig") as log_file:
         return list(csv.DictReader(log_file))
+
+
+def control_input_ranges(feature_names):
+    if "brake_applied" in feature_names:
+        return dict(CONTROL_INPUT_RANGES, throttle_input=PRE_ANALOG_THROTTLE_RANGE)
+    return CONTROL_INPUT_RANGES
 
 
 def build_section_records(log_rows, feature_names, sample_rate_hz, run_id):
@@ -46,7 +57,8 @@ def build_section_records(log_rows, feature_names, sample_rate_hz, run_id):
 
     records = []
     previous_sample_time = None
-    uses_control_inputs = any(name in CONTROL_INPUT_RANGES or name in BINARY_FEATURES for name in feature_names)
+    input_ranges = control_input_ranges(feature_names)
+    uses_control_inputs = any(name in input_ranges or name in BINARY_FEATURES for name in feature_names)
     for row in log_rows:
         section_id = int(row[POINT_NUMBER_COLUMN])
         unavailable_features = [name for name in feature_names if row.get(name) is None or not str(row[name]).strip()]
@@ -68,12 +80,16 @@ def build_section_records(log_rows, feature_names, sample_rate_hz, run_id):
         if not all(math.isfinite(value) for value in frame):
             raise ValueError(f"Non-finite feature value at section {section_id}")
         for name, value in zip(feature_names, frame):
-            if name in CONTROL_INPUT_RANGES:
-                minimum, maximum = CONTROL_INPUT_RANGES[name]
+            if name in input_ranges:
+                minimum, maximum = input_ranges[name]
                 if not minimum <= value <= maximum:
                     raise ValueError(f"Control input {name} at section {section_id} must be in [{minimum}, {maximum}]")
             if name in BINARY_FEATURES and value not in (0.0, 1.0):
                 raise ValueError(f"{name} at section {section_id} must be 0 or 1")
+        if all(name in feature_names for name in GEAR_FEATURES):
+            active_gear_count = sum(frame[feature_names.index(name)] for name in GEAR_FEATURES)
+            if active_gear_count != 1.0:
+                raise ValueError(f"gear one-hot columns at section {section_id} must have exactly one active gear")
 
         if not records or records[-1]["section_id"] != section_id:
             records.append({"schema_version": 1, "sample_rate_hz": sample_rate_hz, "run_id": run_id,

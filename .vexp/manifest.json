@@ -23,8 +23,8 @@
     "tools/claude-review-mcp.mjs": "1df3d7de53abf5d14afb848a2332816d0d28abaf220864fa332c973dc5eab8b1",
     "tools/claude-review-mcp.test.mjs": "715dd62c0a7afd5f1cc27bf1f13481f88686a1b463af281730894332ca19b532"
   },
-  "indexed_at_commit": "54b5b7c7553ecece9910826b438dc62f2f152c08",
-  "indexed_at_timestamp": "2026-10-14T05:03:58.415962500+00:00",
+  "indexed_at_commit": "3a34847377183e99a4a53b64496b2d42a0714b4e",
+  "indexed_at_timestamp": "2026-10-15T06:09:04.240254900+00:00",
   "languages": {
     "javascript": {
       "calls": 0,
