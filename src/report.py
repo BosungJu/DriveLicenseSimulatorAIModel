@@ -39,34 +39,58 @@ REPORT_FILE = "report.json"
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 
 
-# Unity 공식 감점 사유의 한국어 이름
+# Unity 공식 감점 사유(DrivingScoreSheet.cs의 DrivingDeductionReason)의 한국어 이름, enum 순서
+# tests/test_deduction_labels.py가 Unity enum과 다르면 실패한다.
 DEDUCTION_REASON_NAMES = {
     "LaneKeepingLineTouch": "차로 유지 중 선 접촉",
     "ParkingLineTouch": "주차 중 선 접촉",
     "ParkingTimeOver": "주차 제한시간 초과",
     "StartTimeOver": "출발 제한시간 초과",
-    "HillNotStopped": "경사로 미정지",
-    "HillShortStop": "경사로 정지시간 부족",
+    "HillNotStopped": "경사로 미정지(정지시간 부족 포함)",
     "HillRollback": "경사로 뒤로 밀림",
     "HillRollbackOver": "경사로 허용 거리 이상 밀림",
     "HillPassTimeOver": "경사로 통과시간 초과",
     "SignalLongStop": "교차로 장시간 정지",
-    "SignalPassTimeOver": "교차로 통과시간 초과",
     "AccelerationTooSlow": "가속 구간 목표속도 미달",
     "OverSpeed": "과속",
     "EmergencyStopLate": "돌발 정지 지연",
     "CourseTimeOver": "코스 제한시간 초과",
+    "EmergencyHazardLate": "돌발 정지 후 비상등 지연",
+    "EmergencyHazardNotOff": "돌발 정지 후 비상등을 끄지 않고 출발",
+    "ParkingBrakeNotApplied": "주차 중 주차 브레이크 미사용",
+    "TurnSignalMissing": "좌·우회전 방향지시등 미작동",
+    "StartSignalMissing": "출발 시 방향지시등 미작동",
+    "FinishSignalMissing": "종료 시 방향지시등 미작동",
+    "EngineStalled": "주행 중 시동 꺼짐",
+    "SeatBeltNotWorn": "주행 중 안전띠 미착용",
+    "EmergencyHazardEarly": "정지 전 비상등 작동",
+    "SignalViolation": "신호 위반",
+    "AccelerationEntryTooFast": "가속 구간 진입 속도 초과",
+    "AccelerationExitTooFast": "가속 구간 종료 속도 초과",
+    "HeadlightNotOperated": "출발 전 전조등 미조작",
+    "WiperNotOperated": "출발 전 와이퍼 미조작",
+    "SeatBeltNotFastened": "출발 전 안전띠 미착용",
+    "EngineNotStarted": "출발 전 시동 미조작",
 }
 
 
 # 프로젝트에서 정의한 감점 기반 보조 점수의 분류
+# 모든 Unity 감점 사유가 정확히 한 분류에 속해야 한다(tests/test_deduction_labels.py가 검사).
 CATEGORY_REASONS = {
     "control": {
         "HillNotStopped",
-        "HillShortStop",
         "HillRollback",
         "HillRollbackOver",
         "EmergencyStopLate",
+        "EngineStalled",
+        "ParkingBrakeNotApplied",
+        "EmergencyHazardLate",
+        "EmergencyHazardNotOff",
+        "EmergencyHazardEarly",
+        "SeatBeltNotFastened",
+        "EngineNotStarted",
+        "HeadlightNotOperated",
+        "WiperNotOperated",
     },
     "road_driving": {
         "LaneKeepingLineTouch",
@@ -75,12 +99,18 @@ CATEGORY_REASONS = {
     },
     "rule_compliance": {
         "OverSpeed",
+        "AccelerationEntryTooFast",
+        "AccelerationExitTooFast",
         "StartTimeOver",
         "ParkingTimeOver",
         "HillPassTimeOver",
         "SignalLongStop",
-        "SignalPassTimeOver",
+        "SignalViolation",
         "CourseTimeOver",
+        "TurnSignalMissing",
+        "StartSignalMissing",
+        "FinishSignalMissing",
+        "SeatBeltNotWorn",
     },
 }
 
@@ -157,9 +187,11 @@ REPORT_INSTRUCTIONS = """당신은 운전면허 기능시험 시뮬레이터의 
 - category_scores라는 출력 키나 중첩 객체를 만들지 마세요.
 
 점수의 의미:
-- 조작 능력: 경사로 정지와 밀림, 돌발 정지 관련 감점입니다.
+- 조작 능력: 경사로 정지와 밀림, 돌발 정지, 비상등·주차 브레이크·시동,
+  출발 전 기기조작 관련 감점입니다.
 - 도로 주행: 차로와 주차 경로 유지, 목표속도 도달 관련 감점입니다.
-- 준법 능력: 시뮬레이터의 제한속도와 시간 규칙 관련 감점입니다.
+- 준법 능력: 시뮬레이터의 제한속도와 시간 규칙, 신호, 방향지시등,
+  주행 중 안전띠 관련 감점입니다.
 - 세 점수는 프로젝트에서 정의한 감점 기반 보조 점수입니다.
   실제 운전 능력이나 도로교통법 준수 전반에 대한 평가로 설명하지 마세요.
 - 100점은 해당 항목의 공식 감점이 기록되지 않았다는 의미입니다.
@@ -215,8 +247,15 @@ REPORT_INSTRUCTIONS = """당신은 운전면허 기능시험 시뮬레이터의 
 - 최대 2문장, 공백과 문장부호 포함 120자 이내로 작성하세요.
 
 [AI 라벨 해석]
-- insufficient_stop: 정지 부족 가능성
-- unstable_steering: 조향 불안정 가능성
+AI 라벨은 공식 감점 범주를 학습한 후보입니다. 공식 감점과 같은 범주여도 추정으로 표현하세요.
+- stop_failure: 경사로나 돌발 상황에서 정지가 부족했을 가능성
+- hill_rollback: 경사로에서 뒤로 밀렸을 가능성
+- over_speed: 제한속도나 가속 구간 진입·종료 속도를 넘었을 가능성
+- insufficient_acceleration: 가속 구간에서 목표속도에 못 미쳤을 가능성
+- section_time_over: 출발이나 경사로 통과가 제한시간을 넘었을 가능성
+- turn_signal_missing: 회전·출발·종료 시 방향지시등을 켜지 않았을 가능성
+- hazard_light_error: 돌발 정지 전후 비상등 조작이 늦거나 맞지 않았을 가능성
+- vehicle_device_error: 안전띠·시동·전조등 조작 누락이나 시동 꺼짐 가능성
 - 모르는 라벨은 추측하지 마세요.
   필요하면 해당 구간에 해석되지 않은 AI 개선점 후보가 있다고만 설명하세요.
 

@@ -15,11 +15,14 @@ from src.session_predict import build_section_records, predict_session, read_dri
 # Column layout written by DrivingReportCsv in the Unity project.
 CSV_HEADER = ("time_s,point_number,heading_deg,pos_x,pos_z,speed_kmh,accel_mps2,yaw_rate_dps,steering_input,throttle_input,"
               "brake_input,gear_park,gear_reverse,gear_neutral,gear_drive,parking_brake_on,engine_on,left_signal_on,"
-              "right_signal_on,hazard_on,headlight_on,high_beam_on,seat_belt_on,horn_on")
+              "right_signal_on,hazard_on,headlight_on,high_beam_on,seat_belt_on,horn_on,section_start,section_acceleration,"
+              "section_emergency,section_hill_stop,section_signal,section_left_turn,section_right_turn,section_parking,"
+              "section_finish_approach")
+# Point 1 is a start section; point 2 is a left turn with an emergency stop right before the finish.
 CSV_SAMPLES = (
-    "0.000,1,90.00,10.000,20.000,4.000,-0.500,3.000,-0.250,0.500,0.750,0,0,0,1,0,1,1,0,0,1,0,1,0\n"
-    "0.020,1,90.00,10.000,20.000,0.000,0.000,0.000,0.000,0.000,1.000,1,0,0,0,1,1,0,0,0,0,0,1,0\n"
-    "0.040,2,88.00,10.100,20.100,8.000,1.000,-2.000,0.250,1.000,0.000,0,1,0,0,0,1,0,1,1,1,1,1,1\n"
+    "0.000,1,90.00,10.000,20.000,4.000,-0.500,3.000,-0.250,0.500,0.750,0,0,0,1,0,1,1,0,0,1,0,1,0,1,0,0,0,0,0,0,0,0\n"
+    "0.020,1,90.00,10.000,20.000,0.000,0.000,0.000,0.000,0.000,1.000,1,0,0,0,1,1,0,0,0,0,0,1,0,1,0,0,0,0,0,0,0,0\n"
+    "0.040,2,88.00,10.100,20.100,8.000,1.000,-2.000,0.250,1.000,0.000,0,1,0,0,0,1,0,1,1,1,1,1,1,0,0,1,0,0,1,0,0,1\n"
 )
 PRE_ANALOG_CSV = (
     "time_s,point_number,speed_kmh,accel_mps2,yaw_rate_dps,heading_deg,pos_x,pos_z,steering_input,throttle_input,brake_applied\n"
@@ -30,6 +33,11 @@ CONTROL_FEATURES = ("steering_input", "throttle_input", "brake_input", "gear_par
                     "gear_drive", "parking_brake_on")
 VEHICLE_STATE_FEATURES = ("engine_on", "left_signal_on", "right_signal_on", "hazard_on", "headlight_on", "high_beam_on",
                           "seat_belt_on", "horn_on")
+# Scoring rules of the section (Unity DrivingSectionTraits) and whether the next point is the finish.
+SECTION_FEATURES = ("section_start", "section_acceleration", "section_emergency", "section_hill_stop", "section_signal",
+                    "section_left_turn", "section_right_turn", "section_parking", "section_finish_approach")
+START_SECTION = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+EMERGENCY_LEFT_TURN_BEFORE_FINISH = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
 
 
 class UnityInputFeatureTests(unittest.TestCase):
@@ -41,20 +49,34 @@ class UnityInputFeatureTests(unittest.TestCase):
         self.schema = json.loads(schema_path.read_text(encoding="utf-8"))
         self.rows = list(csv.DictReader(io.StringIO(CSV_HEADER + "\n" + CSV_SAMPLES)))
 
-    def test_UpdatedSchema_ExporterColumns_MapsNineteenFeaturesInSchemaOrder(self):
-        self.assertEqual(self.schema["feature_names"], PHYSICS_FEATURES + list(CONTROL_FEATURES + VEHICLE_STATE_FEATURES))
+    def one_hot_labels(self, positive_index):
+        """A complete binary label vector for the schema's labels, whatever their count."""
+        return [int(index == positive_index) for index in range(len(self.schema["label_names"]))]
+
+    def test_UpdatedSchema_ExporterColumns_MapsAllFeaturesInSchemaOrder(self):
+        self.assertEqual(self.schema["feature_names"],
+                         PHYSICS_FEATURES + list(CONTROL_FEATURES + VEHICLE_STATE_FEATURES + SECTION_FEATURES))
         self.assertEqual(self.schema["continuous_features"], PHYSICS_FEATURES + ["steering_input", "throttle_input", "brake_input"])
         records = build_section_records(self.rows, self.schema["feature_names"], 50, "run")
         self.assertEqual(records[0]["features"], [
-            [4.0, -0.5, 3.0, -0.25, 0.5, 0.75, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]])
+            [4.0, -0.5, 3.0, -0.25, 0.5, 0.75, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0] + START_SECTION,
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0] + START_SECTION])
         self.assertEqual(records[1]["features"], [
-            [8.0, 1.0, -2.0, 0.25, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]])
+            [8.0, 1.0, -2.0, 0.25, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            + EMERGENCY_LEFT_TURN_BEFORE_FINISH])
+
+    def test_PreSectionCheckpoint_NewCsv_SelectsOnlyItsNineteenFeatures(self):
+        pre_section_features = PHYSICS_FEATURES + list(CONTROL_FEATURES + VEHICLE_STATE_FEATURES)
+
+        records = build_section_records(self.rows, pre_section_features, 50, "run")
+
+        self.assertEqual(len(records[0]["features"][0]), 19)
 
     def test_ControlInput_InvalidRangeOrBinaryFlag_Fails(self):
         for name, value in (("steering_input", "1.1"), ("throttle_input", "-0.1"), ("throttle_input", "1.1"),
                             ("brake_input", "-0.1"), ("brake_input", "1.5"), ("gear_drive", "0.5"),
-                            ("parking_brake_on", "2"), ("engine_on", "0.5"), ("hazard_on", "-1"), ("horn_on", "2")):
+                            ("parking_brake_on", "2"), ("engine_on", "0.5"), ("hazard_on", "-1"), ("horn_on", "2"),
+                            ("section_hill_stop", "2"), ("section_finish_approach", "0.5")):
             rows = copy.deepcopy(self.rows)
             rows[0][name] = value
             with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
@@ -103,21 +125,23 @@ class UnityInputFeatureTests(unittest.TestCase):
             build_section_records(rows, self.schema["feature_names"], 50, "run")
 
     def test_UnityTrainingRecord_LabeledOffline_LoadsWithSchema(self):
-        # Same layout as DrivingTrainingDataset.Build in the Unity project; a reviewer adds split and labels later.
+        # Same layout as DrivingTrainingDataset.Build in the Unity project; deduction_labels.py adds split and labels.
         feature_names_json = json.dumps(self.schema["feature_names"], separators=(",", ":"))
         unity_line = ('{"schema_version":1,"sample_rate_hz":50,"run_id":"20261015_101500_000_ab12cd34",'
                       '"driver_id":"driver-a","section_id":1,"start_time_s":0.000,"feature_names":' + feature_names_json +
-                      ',"features":[[4.000,-0.500,3.000,-0.250,0.500,1.000,0,0,0,1,0,1,1,0,0,1,0,1,0],'
-                      '[0.000,0.000,0.000,0.000,0.000,0.000,0,1,0,0,1,1,0,0,0,0,0,0,0]]}')
+                      ',"features":[[4.000,-0.500,3.000,-0.250,0.500,1.000,0,0,0,1,0,1,1,0,0,1,0,1,0,1,0,0,0,0,0,0,0,0],'
+                      '[0.000,0.000,0.000,0.000,0.000,0.000,0,1,0,0,1,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0]]}')
         unlabeled = load_records(None, self.schema["feature_names"], self.schema["label_names"], labeled=False,
                                  data_bytes=unity_line.encode("utf-8"))
-        self.assertEqual(tuple(unlabeled[0]["features"].shape), (2, 19))
+        self.assertEqual(tuple(unlabeled[0]["features"].shape), (2, len(self.schema["feature_names"])))
 
-        labeled_record = dict(json.loads(unity_line), split="train", label_names=self.schema["label_names"], labels=[1, 0])
+        labeled_record = dict(json.loads(unity_line), split="train", label_names=self.schema["label_names"],
+                              labels=self.one_hot_labels(0))
         labeled = load_records(None, self.schema["feature_names"], self.schema["label_names"],
                                data_bytes=json.dumps(labeled_record).encode("utf-8"))
         self.assertEqual(labeled[0]["features"][1].tolist(),
-                         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                         [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                         + START_SECTION)
         self.assertEqual(labeled[0]["driver_id"], "driver-a")
 
     def test_ControlInput_TimeGapOrInvalidTime_Fails(self):
@@ -127,13 +151,13 @@ class UnityInputFeatureTests(unittest.TestCase):
             with self.subTest(time_s=sample_time), self.assertRaisesRegex(ValueError, "time"):
                 build_section_records(rows, self.schema["feature_names"], 50, "run")
 
-    def test_NewExporterCsv_TrainAndSessionPredict_UsesAllNineteenFeatures(self):
+    def test_NewExporterCsv_TrainAndSessionPredict_UsesAllFeatures(self):
         records = []
         for split in ("train", "val", "test"):
             sections = build_section_records(self.rows, self.schema["feature_names"], 50, split + "-run")
             for record in sections:
                 records.append(dict(record, split=split, label_names=self.schema["label_names"],
-                                    labels=[1, 0] if record["section_id"] == 1 else [0, 1]))
+                                    labels=self.one_hot_labels(0 if record["section_id"] == 1 else 1)))
         training_path = self.root / "training.jsonl"
         training_path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
         schema_path = self.root / "schema.json"
@@ -143,7 +167,7 @@ class UnityInputFeatureTests(unittest.TestCase):
                                   seed=42, hidden_size=4, epochs=1, batch_size=2, learning_rate=0.01, device="cpu")
         with contextlib.redirect_stdout(io.StringIO()):
             baseline = train(args)
-        self.assertEqual(baseline.model.lstm.input_size, 19)
+        self.assertEqual(baseline.model.lstm.input_size, len(self.schema["feature_names"]))
         session = self.root / "session"
         session.mkdir()
         (session / "driving_log.csv").write_text(CSV_HEADER + "\n" + CSV_SAMPLES, encoding="utf-8-sig")

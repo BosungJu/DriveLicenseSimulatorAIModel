@@ -101,18 +101,18 @@ feature별 bias는 `[-bias_max, +bias_max]` 균등분포로 구간당 한 번 �
 `schema.json` 예시:
 
 ```json
-{"schema_version":1,"sample_rate_hz":50,"feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_input","gear_park","gear_reverse","gear_neutral","gear_drive","parking_brake_on","engine_on","left_signal_on","right_signal_on","hazard_on","headlight_on","high_beam_on","seat_belt_on","horn_on"],"label_names":["insufficient_stop","unstable_steering"]}
+{"schema_version":1,"sample_rate_hz":50,"feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_input","gear_park","gear_reverse","gear_neutral","gear_drive","parking_brake_on","engine_on","left_signal_on","right_signal_on","hazard_on","headlight_on","high_beam_on","seat_belt_on","horn_on","section_start","section_acceleration","section_emergency","section_hill_stop","section_signal","section_left_turn","section_right_turn","section_parking","section_finish_approach"],"label_names":["stop_failure","hill_rollback","over_speed","insufficient_acceleration","section_time_over","turn_signal_missing","hazard_light_error","vehicle_device_error"]}
 ```
 
 JSONL의 각 행은 구간 하나입니다. 학습 행 예시:
 
 ```json
-{"schema_version":1,"sample_rate_hz":50,"run_id":"anonymous-run-001","section_id":2,"split":"train","feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_input","gear_park","gear_reverse","gear_neutral","gear_drive","parking_brake_on","engine_on","left_signal_on","right_signal_on","hazard_on","headlight_on","high_beam_on","seat_belt_on","horn_on"],"features":[[4.0,-0.5,3.0,-0.25,0.5,1.0,0,0,0,1,0,1,1,0,0,1,0,1,0],[0.0,0.0,0.0,0.0,0.0,0.75,0,1,0,0,1,1,0,0,0,0,0,1,0]],"label_names":["insufficient_stop","unstable_steering"],"labels":[1,0]}
+{"schema_version":1,"sample_rate_hz":50,"run_id":"anonymous-run-001","section_id":2,"split":"train","feature_names":["speed_kmh","accel_mps2","yaw_rate_dps","steering_input","throttle_input","brake_input","gear_park","gear_reverse","gear_neutral","gear_drive","parking_brake_on","engine_on","left_signal_on","right_signal_on","hazard_on","headlight_on","high_beam_on","seat_belt_on","horn_on","section_start","section_acceleration","section_emergency","section_hill_stop","section_signal","section_left_turn","section_right_turn","section_parking","section_finish_approach"],"features":[[4.0,-0.5,3.0,-0.25,0.5,1.0,0,0,0,1,0,1,1,0,0,1,0,1,0,0,0,0,0,0,1,0,0,1],[0.0,0.0,0.0,0.0,0.0,0.75,0,1,0,0,1,1,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,1]],"label_names":["stop_failure","hill_rollback","over_speed","insufficient_acceleration","section_time_over","turn_signal_missing","hazard_light_error","vehicle_device_error"],"labels":[0,0,0,0,0,1,0,0]}
 ```
 
 - 관측은 고정 Hz로 수집하거나 사전에 리샘플합니다. 시간 간격은 메타데이터만으로 검증할 수 없으므로 수집 계층이 보장해야 합니다. 단위와 실제 적용 입력의 범위를 feature 이름 및 수집 문서로 고정하세요. 50 Hz는 예시입니다.
 - `features`는 패딩 없는 T × F 유한 수치 배열입니다. 빈 구간과 결측/NaN/Inf는 거부합니다. feature 이름과 순서는 schema 및 checkpoint와 정확히 일치해야 합니다.
-- 라벨 이름은 구성 가능하며 예시 라벨의 판정 기준은 아직 확정하지 않았습니다. 전문가가 정의한 계약과 근거 기록이 필요합니다. `1`은 확인된 양성, `0`은 확인된 음성입니다. 미평가·적용 불가 항목을 0으로 채우지 마세요. v1은 결측 라벨을 지원하지 않으므로 모든 항목이 평가된 표본만 사용합니다.
+- 라벨 이름은 구성 가능합니다. 기본 라벨은 아래 [감점 기반 라벨](#감점-기반-라벨)의 공식 감점 범주입니다. `1`은 확인된 양성, `0`은 확인된 음성입니다. 미평가·적용 불가 항목을 0으로 채우지 마세요. v1은 결측 라벨을 지원하지 않으므로 모든 항목이 평가된 표본만 사용합니다.
 - `split`은 train/val/test 중 하나입니다. train과 val은 필수, test는 선택입니다. 동일 run_id의 구간들이 split을 넘으면 오류입니다. 새 운전자에 대한 평가에는 익명 driver_id도 지정하세요. 지정된 driver_id의 split 일관성도 검증합니다. driver_id를 생략하면 운전자 단위 누수를 감지할 수 없습니다.
 - 맵·물리·판정 설정 버전을 통일한 데이터로 시작하세요. 감점 결과나 라벨을 직접 드러내는 값을 feature로 넣으면 평가가 왜곡될 수 있습니다.
 - 추론 행에는 split/label_names/labels가 필요 없습니다. run_id, feature_names, features, schema_version, sample_rate_hz는 필수입니다.
@@ -137,18 +137,66 @@ JSONL의 각 행은 구간 하나입니다. 학습 행 예시:
 | headlight_on / high_beam_on | VehicleSystems.HeadlightOn / HighBeamOn, 0/1 |
 | seat_belt_on | VehicleSystems.SeatBeltOn, 0/1 |
 | horn_on | VehicleSystems.HornOn, 0/1; 누르고 있는 동안 1 |
+| section_start / section_acceleration / section_emergency / section_hill_stop / section_signal / section_left_turn / section_right_turn / section_parking | 현재 구간에 적용되는 채점 규칙(Unity `DrivingSectionTraits`), 0/1; 동시 명령 구간은 여러 개가 1 |
+| section_finish_approach | 다음 경로 지점이 종료 지점이면 1; 종료 방향지시등 규칙이 이 구간을 판정함 |
 
 steering_input은 부드럽게 제한된 실제 휠 조향각이 아니며, throttle_input은 실제 모터 토크가 아닙니다. 시동이 꺼져 있거나 P/N 기어여도 사용자의 가속 입력은 기록될 수 있습니다. 기어·주차 브레이크·차량 상태 토글은 Update에서 바뀌므로 표본에는 해당 물리 스텝 직전의 최신 상태가 기록됩니다. 상태는 차량 제어 코드 이후, 다음 물리 시뮬레이션 이전에 기록하므로 speed_kmh에는 CarController.Brake의 페달 비례 감속(끝까지 밟으면 `linearVelocity *= 0.98`)이 이미 반영됩니다. 와이퍼(`WiperController`)는 차량 컨트롤러와 연결된 참조가 없어 포함하지 않았습니다. 이진·원-핫 feature는 `continuous_features`에 넣지 마세요.
 
-CSV 열 순서는 `time_s,point_number,heading_deg,pos_x,pos_z` 뒤에 위 feature 순서입니다. Unity의 `DrivingFeatureColumns`가 CSV와 학습 JSONL에 같은 열 정의·형식을 사용합니다. heading_deg/pos_x/pos_z는 기본 모델 feature에서 제외하고, time_s/point_number는 시간과 구간 메타데이터로 사용합니다. AI의 `session_predict.py`는 열 이름으로 checkpoint feature를 선택하며, 조향(-1~1)·페달(0~1) 범위, 이진 값, 기어 원-핫(정확히 하나 활성)을 검사합니다. 입력 feature를 사용하는 모델에서는 time_s 간격도 검사해 누락 프레임을 조용히 압축하지 않습니다(기록의 3자리 반올림 오차 허용). 아날로그 브레이크 이전 CSV(`brake_applied`, 부호 있는 throttle)에 0이나 추정 입력을 채우지 않으므로 새 19-feature 모델에서는 오류입니다. `brake_applied`를 feature로 쓰는 이전 checkpoint는 이전 로그 추론을 위해 throttle_input -1~1 범위를 유지합니다. 새 모델은 라벨을 준비한 새 기록으로 재학습해야 하며 기존 checkpoint의 스키마와 가중치를 자동으로 변경하지 않습니다. 예시 라벨 정의는 계속 전문가 검토가 필요합니다.
+구간 feature는 명령 문자열이 아니라 채점기가 그 구간에 적용하는 규칙입니다. Unity 평가기(`DrivingTestScoreEvaluator`)가 판정기를 고를 때 쓰는 `DrivingSectionTraits`를 `ReportManager`도 그대로 사용하므로 두 기준이 어긋나지 않습니다. 예를 들어 section_hill_stop은 `DrivingScoringSettings.HillStopStep` 단계(기본 hill_1)에서만, section_acceleration은 종료 단계 fast_1을 제외하고, section_parking은 종료 단계 T_TEST_3을 제외하고 1입니다. 구간 진입과 함께 정해지는 값이라 결측이 없습니다. 이 9개 열이 추가되면서 이전 `training_sections.jsonl`(19 feature)은 새 스키마로 학습할 수 없으니 다시 수집하세요. 19-feature checkpoint는 열 이름으로 선택하므로 새 CSV로도 추론할 수 있습니다.
+
+CSV 열 순서는 `time_s,point_number,heading_deg,pos_x,pos_z` 뒤에 위 feature 순서입니다. Unity의 `DrivingFeatureColumns`가 CSV와 학습 JSONL에 같은 열 정의·형식을 사용합니다. heading_deg/pos_x/pos_z는 기본 모델 feature에서 제외하고, time_s/point_number는 시간과 구간 메타데이터로 사용합니다. AI의 `session_predict.py`는 열 이름으로 checkpoint feature를 선택하며, 조향(-1~1)·페달(0~1) 범위, 이진 값, 기어 원-핫(정확히 하나 활성)을 검사합니다. 입력 feature를 사용하는 모델에서는 time_s 간격도 검사해 누락 프레임을 조용히 압축하지 않습니다(기록의 3자리 반올림 오차 허용). 아날로그 브레이크 이전 CSV(`brake_applied`, 부호 있는 throttle)에 0이나 추정 입력을 채우지 않으므로 새 입력 feature 모델에서는 오류입니다. `brake_applied`를 feature로 쓰는 이전 checkpoint는 이전 로그 추론을 위해 throttle_input -1~1 범위를 유지합니다. 새 모델은 라벨을 준비한 새 기록으로 재학습해야 하며 기존 checkpoint의 스키마와 가중치를 자동으로 변경하지 않습니다. 예시 라벨 정의는 계속 전문가 검토가 필요합니다.
 
 입력을 요구하는 모델에서 한 표본이라도 입력이 비어 있으면 세션 전체 추론을 실패시키며 부분 결과를 만들지 않습니다. 물리 feature만 사용하는 기존 모델은 이전 호환 경로를 유지하므로 time_s 간격 검사는 적용하지 않습니다.
 
 ### Unity 학습 데이터 수집
 
-`TrainingDataCollector`(Unity `Assets/Scripts/AI_Report`)를 `ReportManager`와 같은 오브젝트에 붙이면, 코스 완료 후 세션 폴더에 `training_sections.jsonl`을 함께 씁니다. 각 행은 위 데이터 계약 v1의 라벨 없는 구간 레코드이며 run_id(세션 폴더 이름 + 무작위 8자리), 선택적 익명 driver_id, section_id, start_time_s를 포함합니다. 값은 driving_log.csv와 같은 소수 3자리 반올림입니다. 입력·상태 결측, NaN, 고정 간격(0.5~1.5스텝)을 벗어난 시각이 있는 구간은 레코드를 만들지 않고 건너뜁니다. 학습 데이터는 세션 파일들을 합친 뒤 각 행에 split/label_names/labels를 추가해 만듭니다. 코스를 완료하지 않고 초기화한 주행은 저장되지 않습니다.
+`TrainingDataCollector`(Unity `Assets/Scripts/AI_Report`)를 `ReportManager`와 같은 오브젝트에 붙이면, 코스 완료 후 세션 폴더에 `training_sections.jsonl`을 함께 씁니다. 각 행은 위 데이터 계약 v1의 라벨 없는 구간 레코드이며 run_id(세션 폴더 이름 + 무작위 8자리), 선택적 익명 driver_id, section_id, start_time_s를 포함합니다. 값은 driving_log.csv와 같은 소수 3자리 반올림입니다. 입력·상태 결측, NaN, 고정 간격(0.5~1.5스텝)을 벗어난 시각이 있는 구간은 레코드를 만들지 않고 건너뜁니다. 학습 데이터는 아래 `deduction_labels.py`로 세션 파일들을 합치면서 split/label_names/labels를 추가해 만듭니다. 코스를 완료하지 않고 초기화한 주행은 저장되지 않습니다.
 
 Unity 수동 확인: 코스 주행 중 조향 양방향, 가속·브레이크 페달 부분 입력, P/R/N/D 변속, 주차 브레이크, 시동·방향지시등·비상등·전조등·상향등·안전벨트·경음기를 조작하고 코스 종료 후 AIReport 세션의 driving_log.csv와 training_sections.jsonl을 확인하세요. EditMode Test Runner의 `DrivingReportCsvTests`, `DrivingTrainingDatasetTests`가 열 순서, 원-핫 기어, 아날로그 페달, 결측 빈칸, 문화권에 무관한 숫자 형식과 구간 건너뛰기를 검증합니다.
+
+### 감점 기반 라벨
+
+`src/deduction_labels.py`는 각 세션 폴더의 `training_sections.jsonl`에 같은 세션 `section_results.json`의 공식 감점을 구간(pointNumber) 단위로 붙입니다. 라벨 1은 "시뮬레이터 채점기가 이 구간에서 해당 범주로 감점 또는 실격 처리했다"는 뜻이고, 0은 그런 기록이 없다는 뜻입니다. 전문가 라벨이 아니라 공식 채점 결과를 모방하는 약지도 라벨입니다. 구간 종류는 section_* feature로 함께 입력되므로, 모델은 어떤 채점 규칙이 적용되는 구간인지 알고 라벨을 학습합니다.
+
+```powershell
+# AIReport 폴더(세션 폴더들의 부모) 또는 개별 세션 폴더를 여러 개 지정
+.\.venv\Scripts\python.exe src/deduction_labels.py "$env:USERPROFILE\AppData\LocalLow\<회사>\<제품>\AIReport" --output res/train/sections.jsonl --val-ratio 0.2 --test-ratio 0.1 --seed 42
+.\.venv\Scripts\python.exe src/baseline.py train --data res/train/sections.jsonl --schema res/schema.example.json --output artifacts/lstm-deduction.pt
+```
+
+| 라벨 | Unity `DrivingDeductionReason` |
+| --- | --- |
+| stop_failure | HillNotStopped, EmergencyStopLate |
+| hill_rollback | HillRollback, HillRollbackOver |
+| over_speed | OverSpeed, AccelerationEntryTooFast, AccelerationExitTooFast |
+| insufficient_acceleration | AccelerationTooSlow |
+| section_time_over | StartTimeOver, HillPassTimeOver |
+| turn_signal_missing | TurnSignalMissing, StartSignalMissing, FinishSignalMissing |
+| hazard_light_error | EmergencyHazardLate, EmergencyHazardNotOff, EmergencyHazardEarly |
+| vehicle_device_error | SeatBeltNotFastened, SeatBeltNotWorn, EngineNotStarted, HeadlightNotOperated, EngineStalled |
+
+라벨에서 제외한 사유와 이유: LaneKeepingLineTouch·ParkingLineTouch(차선과 차량 위치가 feature에 없음), SignalViolation·SignalLongStop(신호등 상태가 feature에 없음), ParkingTimeOver·ParkingBrakeNotApplied(여러 T_TEST 구간에 걸친 판정), CourseTimeOver(코스 전체 시간), WiperNotOperated(와이퍼 미기록). 이 감점들도 보고서의 공식 감점과 능력 점수에는 그대로 반영됩니다.
+
+귀속 규칙:
+
+- 감점은 채점기가 기록한 pointNumber 구간의 라벨이 됩니다. 구간 종료 시점 판정도 끝나는 구간에 기록됩니다.
+- FinishSignalMissing은 종료 지점 진입 시 기록되지만 직전 진입 구간을 판정한 결과이므로 직전 구간에 붙입니다. 종료 지점은 진입과 동시에 코스가 끝나 표본이 없습니다.
+- 채점표는 첫 실격만 기록하므로, 실격 구간 **이후** 구간은 실격형 결함이 있어도 0이 될 수 있습니다. 이런 구간은 데이터셋에서 제외합니다. 실격 구간 자체는 유지하지만, 같은 구간에서 첫 실격 뒤에 일어난 두 번째 실격형 결함은 기록되지 않는 한계가 있습니다.
+- split은 driver_id(없으면 run_id) 단위로 seed에 따라 재현 가능하게 나눕니다. 같은 run_id 안에서 driver_id가 섞여 있거나, 그룹 수가 train/val(/test)을 채우기에 부족하면 오류입니다.
+
+### 감점 사유 동기화
+
+Unity `DrivingScoreSheet.cs`의 `DrivingDeductionReason`을 기준으로 세 표를 맞춥니다. `tests/test_deduction_labels.py`가 enum을 직접 읽어 검사하므로, Unity에 사유를 추가하거나 이름을 바꾸면 테스트가 실패합니다. Unity 저장소가 이 프로젝트 옆 폴더가 아니면 `DRIVER_LICENSE_SIMULATOR_ROOT` 환경변수로 위치를 지정하세요. 없으면 해당 테스트는 건너뜁니다.
+
+| 표 | 위치 | 규칙 |
+| --- | --- | --- |
+| 라벨 / 제외 사유 | `src/deduction_labels.py` `LABEL_REASONS`, `UNOBSERVABLE_REASONS` | 모든 사유가 정확히 한 곳 |
+| 한국어 사유 이름 | `src/report.py` `DEDUCTION_REASON_NAMES` | enum 순서 그대로 |
+| 능력 점수 분류 | `src/report.py` `CATEGORY_REASONS` | 모든 사유가 정확히 한 분류; 없으면 보고서 생성이 중단됨 |
+
+능력 점수 분류는 조작(경사로 정지·밀림, 돌발 정지, 비상등·주차 브레이크·시동, 출발 전 기기조작), 도로 주행(차로·주차선 접촉, 목표속도 미달), 준법(속도·시간 규칙, 신호, 방향지시등, 주행 중 안전띠)입니다. 보고서 프롬프트의 AI 라벨 해석도 위 8개 라벨로 맞춰져 있습니다.
+
+출력 요약의 `positives_by_split`로 라벨별 양성 수를, `unrecorded_positive_sections`로 Unity가 입력 결측 등으로 레코드를 만들지 않아 잃은 양성 구간 수를 확인하세요. 라벨 집합이 바뀌었으므로 기존 2-라벨 checkpoint는 재학습이 필요합니다. 증대 설정의 speed_kmh `protected_values`(0/1/20)는 Unity `DrivingScoringSettings`의 정지 판정 1 km/h, 지정속도·가속 목표 20 km/h와 맞춘 값이므로 판정 설정을 바꾸면 함께 바꾸세요.
 
 ## 학습과 결과 해석
 

@@ -30,8 +30,12 @@ PRE_ANALOG_THROTTLE_RANGE = (-1.0, 1.0)
 # Gear is one-hot encoded; exactly one gear column is 1 in every sample.
 GEAR_FEATURES = ("gear_park", "gear_reverse", "gear_neutral", "gear_drive")
 # Unity exports the parking brake and VehicleSystems toggles as 0/1 flags (brake_applied is the pre-analog brake).
+# Section flags are Unity DrivingSectionTraits (the scoring rules of the section) and the finish-approach flag;
+# several can be 1 at once, e.g. a left turn with an emergency stop.
+SECTION_FEATURES = ("section_start", "section_acceleration", "section_emergency", "section_hill_stop", "section_signal",
+                    "section_left_turn", "section_right_turn", "section_parking", "section_finish_approach")
 BINARY_FEATURES = GEAR_FEATURES + ("brake_applied", "parking_brake_on", "engine_on", "left_signal_on", "right_signal_on",
-                                   "hazard_on", "headlight_on", "high_beam_on", "seat_belt_on", "horn_on")
+                                   "hazard_on", "headlight_on", "high_beam_on", "seat_belt_on", "horn_on") + SECTION_FEATURES
 # Unity exports time_s to three decimals, giving at most 0.001 seconds of interval rounding.
 SAMPLE_TIME_TOLERANCE_SECONDS = 0.0011
 

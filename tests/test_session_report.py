@@ -35,6 +35,18 @@ def section_results(sample_rate_hz=50.0):
     }
 
 
+# A model response that passes report.parse_report for section_results(): "2"~"4" equal the category scores.
+UI_REPORT = {
+    "1": "합격했어요. 경사로 감점을 보완해 보세요.",
+    "2": 90,
+    "3": 100,
+    "4": 100,
+    "5": "출발 구간에서 공식 감점이 기록되지 않았어요.",
+    "6": "경사로 구간에서 뒤로 밀려 감점됐어요.",
+    "7": "경사로에서 브레이크를 떼기 전에 가속 페달로 출발 준비를 연습해 보세요.",
+}
+
+
 class SessionPredictTests(unittest.TestCase):
     #region Section records
 
@@ -167,14 +179,31 @@ class ReportTests(unittest.TestCase):
             (session_dir / "section_results.json").write_text(json.dumps(section_results()), encoding="utf-8-sig")
             (session_dir / "predictions.json").write_text(json.dumps(self.predictions()), encoding="utf-8")
 
-            with mock.patch.object(report, "request_report", return_value="## 총평") as request_report:
+            with mock.patch.object(report, "request_report", return_value=json.dumps(UI_REPORT)) as request_report:
                 report_path = report.generate_report(session_dir, model="test-model")
 
             sent_input, sent_model = request_report.call_args.args
             self.assertEqual(sent_model, "test-model")
-            self.assertEqual(report_path.read_text(encoding="utf-8"), "## 총평")
+            self.assertEqual(report_path.name, "report.json")
+            self.assertEqual(json.loads(report_path.read_text(encoding="utf-8")), UI_REPORT)
             saved_input = json.loads((session_dir / "report_input.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_input, sent_input)
+            # The fixture's 10-point HillRollback is a control deduction out of 100.
+            self.assertEqual(saved_input["category_scores"], {"control": 90, "road_driving": 100, "rule_compliance": 100})
+
+    def test_GenerateReport_InvalidModelResponse_FailsWithoutWritingReport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory)
+            (session_dir / "section_results.json").write_text(json.dumps(section_results()), encoding="utf-8-sig")
+            wrong_score_report = dict(UI_REPORT, **{"2": 100})
+
+            for response_text in ("## 총평", json.dumps(wrong_score_report)):
+                with self.subTest(response=response_text), \
+                        mock.patch.object(report, "request_report", return_value=response_text), \
+                        self.assertRaises(ValueError):
+                    report.generate_report(session_dir, require_predictions=False)
+
+            self.assertFalse((session_dir / "report.json").exists())
 
     def test_GenerateReport_MissingPredictions_FailsUnlessAllowed(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -183,8 +212,20 @@ class ReportTests(unittest.TestCase):
 
             with self.assertRaises(FileNotFoundError):
                 report.generate_report(session_dir)
-            with mock.patch.object(report, "request_report", return_value="## 총평"):
+            with mock.patch.object(report, "request_report", return_value=json.dumps(UI_REPORT)):
                 report.generate_report(session_dir, require_predictions=False)
+
+    def test_CalculateCategoryScores_ReasonsAddedToCategories_ScoreEachCategory(self):
+        report_input = report.build_report_input(section_results(), None)
+        report_input["sections"][0]["official_deductions"] = [
+            {"reason": "TurnSignalMissing", "points": 5},
+            {"reason": "EngineStalled", "points": 5},
+        ]
+
+        scores = report.calculate_category_scores(report_input)
+
+        # HillRollback 10 + EngineStalled 5 are control; TurnSignalMissing 5 is rule compliance.
+        self.assertEqual(scores, {"control": 85, "road_driving": 100, "rule_compliance": 95})
 
 
 if __name__ == "__main__":
