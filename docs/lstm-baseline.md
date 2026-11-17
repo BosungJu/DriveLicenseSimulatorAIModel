@@ -152,6 +152,24 @@ CSV 열 순서는 `time_s,point_number,heading_deg,pos_x,pos_z` 뒤에 위 featu
 
 `TrainingDataCollector`(Unity `Assets/Scripts/AI_Report`)를 `ReportManager`와 같은 오브젝트에 붙이면, 코스 완료 후 세션 폴더에 `training_sections.jsonl`을 함께 씁니다. 각 행은 위 데이터 계약 v1의 라벨 없는 구간 레코드이며 run_id(세션 폴더 이름 + 무작위 8자리), 선택적 익명 driver_id, section_id, start_time_s를 포함합니다. 값은 driving_log.csv와 같은 소수 3자리 반올림입니다. 입력·상태 결측, NaN, 고정 간격(0.5~1.5스텝)을 벗어난 시각이 있는 구간은 레코드를 만들지 않고 건너뜁니다. 학습 데이터는 아래 `deduction_labels.py`로 세션 파일들을 합치면서 split/label_names/labels를 추가해 만듭니다. 코스를 완료하지 않고 초기화한 주행은 저장되지 않습니다.
 
+#### 구간 반복 연습 모드 (구간별 수집)
+
+특정 구간 데이터만 집중해서 모으려면 Unity `DrivingTestSession`의 **Section Practice**를 켭니다. 연습 시작 지점(CAD 점 번호)에 차량을 놓고 지정한 구간 수만큼 주행하면, 다음 지점에 닿는 순간 그 시도를 코스 완료처럼 내보낸 뒤(세션 폴더에 driving_log.csv, section_results.json, training_sections.jsonl) 지연 시간 후 같은 지점에서 다시 시작합니다. 따라서 아래 `deduction_labels.py` 명령을 그대로 사용합니다.
+
+| Inspector 항목 | 의미 |
+| --- | --- |
+| Is Section Practice Enabled | 켜면 R 키 재시작과 자동 재시작이 전체 코스 대신 연습 범위로 동작 |
+| Practice Start Point Number | 시도를 시작할 CAD 점 번호; 이 점의 구간을 먼저 주행 |
+| Practice Section Count | 시도당 연속 구간 수(기본 1); 마지막(종료) 지점을 넘지 않음 |
+| Practice Restart Delay Seconds | 저장 후 다음 시도까지 대기 시간(기본 2초) |
+
+- 연습 종료 지점의 구간은 진입하지 않고 끝내므로, 주행하지 않은 구간의 판정기가 감점(예: 가속 미달, 경사로 미정지)을 만들지 않습니다. 종료 지점 통과 속도는 마지막 구간의 출구 속도로 판정합니다. 범위가 종료 지점까지 이어지면 종료 방향지시등도 평소처럼 판정합니다.
+- 차량은 정지 상태로 시작 지점에 놓입니다. 목표 구간에 주행 속도로 진입한 데이터를 원하면 한 지점 앞에서 시작하고 구간 수를 2로 두세요(앞 구간 데이터도 함께 저장되며 정상적인 학습 데이터입니다).
+- 직각주차(T_TEST_n)처럼 여러 지점에 걸친 판정은 범위가 전체 단계를 덮어야 합니다. 일부만 연습하면 주차 시간·주차 브레이크 판정이 잘려 보고서 점수가 실제와 달라집니다(두 사유는 라벨에서 제외되어 학습 라벨에는 영향 없음).
+- 시동·안전벨트·기어 상태는 재시작해도 유지되므로 첫 시도에서만 준비하면 됩니다. 시작 절차 데이터가 필요하면 출발 지점(start)부터 연습하세요.
+- section_results.json의 `isSectionPractice`가 true이면 코스 일부만 주행한 기록이라 score/isPassed는 코스 합격 판정이 아닙니다. `report.py`는 이 값을 `is_section_practice`로 넘겨 보고서에서 합격·불합격을 안내하지 않게 합니다. 완료하지 않고 R로 재시작한 시도는 저장되지 않습니다.
+- 같은 운전자의 반복 시도가 train/val에 섞이지 않도록 `TrainingDataCollector`의 익명 driver_id를 지정하세요. 지정하지 않으면 시도마다 다른 그룹으로 나뉘어 운전자 단위 누수가 생깁니다.
+
 Unity 수동 확인: 코스 주행 중 조향 양방향, 가속·브레이크 페달 부분 입력, P/R/N/D 변속, 주차 브레이크, 시동·방향지시등·비상등·전조등·상향등·안전벨트·경음기를 조작하고 코스 종료 후 AIReport 세션의 driving_log.csv와 training_sections.jsonl을 확인하세요. EditMode Test Runner의 `DrivingReportCsvTests`, `DrivingTrainingDatasetTests`가 열 순서, 원-핫 기어, 아날로그 페달, 결측 빈칸, 문화권에 무관한 숫자 형식과 구간 건너뛰기를 검증합니다.
 
 ### 감점 기반 라벨
@@ -197,6 +215,22 @@ Unity `DrivingScoreSheet.cs`의 `DrivingDeductionReason`을 기준으로 세 표
 능력 점수 분류는 조작(경사로 정지·밀림, 돌발 정지, 비상등·주차 브레이크·시동, 출발 전 기기조작), 도로 주행(차로·주차선 접촉, 목표속도 미달), 준법(속도·시간 규칙, 신호, 방향지시등, 주행 중 안전띠)입니다. 보고서 프롬프트의 AI 라벨 해석도 위 8개 라벨로 맞춰져 있습니다.
 
 출력 요약의 `positives_by_split`로 라벨별 양성 수를, `unrecorded_positive_sections`로 Unity가 입력 결측 등으로 레코드를 만들지 않아 잃은 양성 구간 수를 확인하세요. 라벨 집합이 바뀌었으므로 기존 2-라벨 checkpoint는 재학습이 필요합니다. 증대 설정의 speed_kmh `protected_values`(0/1/20)는 Unity `DrivingScoringSettings`의 정지 판정 1 km/h, 지정속도·가속 목표 20 km/h와 맞춘 값이므로 판정 설정을 바꾸면 함께 바꾸세요.
+
+### 구간별 라벨 마스크
+
+채점기는 라벨마다 판정하는 구간이 정해져 있습니다(예: hill_rollback은 경사로 정지 구간에서만). 그 밖의 구간에서 라벨 0은 "정상"이 아니라 "판정 대상 아님"이므로, 스키마의 `label_sections`로 라벨별 판정 구간을 지정하면 해당 항목을 손실·평가·추론에서 제외합니다. 모델은 하나를 공유하고 구간 종류는 `section_*` feature로 입력합니다. 구간 유형별 별도 모델보다 데이터를 나누지 않아 적은 수집량에서 유리합니다.
+
+| 키 | 의미 |
+| --- | --- |
+| section_features | 구간 종류를 나타내는 0/1 feature 목록; `continuous_features`에 넣을 수 없음 |
+| label_sections | 모든 라벨 → `"all"`(모든 구간에서 판정) 또는 section_features 중 판정 구간 목록 |
+
+구간의 section feature가 한 프레임이라도 1이면 그 종류로 봅니다. 예시 스키마의 매핑은 Unity 판정기 기준입니다: stop_failure(경사로 정지·돌발), hill_rollback(경사로 정지), insufficient_acceleration(가속), section_time_over(출발·경사로 정지), turn_signal_missing(출발·좌회전·우회전·종료 직전), hazard_light_error(돌발), over_speed·vehicle_device_error(all; 코스 전체 규칙 포함). 판정기를 바꾸면 이 매핑도 함께 바꾸세요.
+
+- 학습 손실은 판정 항목의 평균 BCE입니다. `label_sections`가 없는 기존 스키마는 모든 항목을 판정하므로 이전 결과와 같습니다.
+- 평가 출력의 `per_label`에 `judged_count`(판정된 구간 수)가 추가되고, `per_section`에 section_features 종류별 BCE·micro F1·라벨별 지표가 나옵니다. 여러 종류가 켜진 구간은 각 종류에 모두 집계됩니다. 판정 항목이 없으면 bce는 null입니다.
+- 상수 기준선의 라벨 빈도도 판정 구간에서만 계산합니다. 어떤 train 구간에서도 판정되지 않는 라벨은 경고합니다.
+- 추론의 `probabilities`에는 그 구간에서 판정되는 라벨만 들어갑니다. 스키마가 checkpoint에 저장되므로 추론 시 같은 마스크를 사용합니다. `label_sections`를 추가한 스키마는 재학습이 필요합니다.
 
 ## 학습과 결과 해석
 

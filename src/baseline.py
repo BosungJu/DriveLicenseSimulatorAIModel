@@ -23,6 +23,73 @@ else:
 MIN_FEATURE_STD = 1e-6
 AUGMENTATION_SEED_OFFSET = 1_000_003
 MIN_AUGMENTATION_APPLY_RATE = 0.1
+# label_sections value of a label the scorer judges in every section (course-wide rules such as the speed limit).
+ALL_SECTIONS = "all"
+# Section features are 0/1 flags; a section is of that kind when the flag is on in any frame.
+SECTION_ACTIVE_THRESHOLD = 0.5
+
+
+def validate_label_sections(schema):
+    """Returns the section feature names of the schema and, per label, the feature indices it is judged in.
+
+    Both are None without label_sections, so every label is judged in every section (schemas before this key).
+    A label entry of None means the label is judged in every section.
+    """
+    label_sections = schema.get("label_sections")
+    if label_sections is None:
+        if "section_features" in schema:
+            raise ValueError("section_features requires label_sections")
+        return None, None
+    feature_names = schema["feature_names"]
+    section_features = schema.get("section_features")
+    if not isinstance(section_features, list) or not section_features or len(set(section_features)) != len(section_features) \
+            or any(name not in feature_names for name in section_features):
+        raise ValueError("label_sections requires section_features: a nonempty list of unique feature names")
+    if any(name in schema.get("continuous_features", []) for name in section_features):
+        raise ValueError("section_features must be 0/1 flags, not continuous features")
+    if not isinstance(label_sections, dict) or set(label_sections) != set(schema["label_names"]):
+        raise ValueError("label_sections must map every label name to \"all\" or its section features")
+    label_section_indices = []
+    for label_name in schema["label_names"]:
+        sections = label_sections[label_name]
+        if sections == ALL_SECTIONS:
+            label_section_indices.append(None)
+            continue
+        if not isinstance(sections, list) or not sections or len(set(sections)) != len(sections) \
+                or any(name not in section_features for name in sections):
+            raise ValueError(f"label_sections[{label_name!r}] must be \"all\" or a nonempty list of section_features")
+        label_section_indices.append([feature_names.index(name) for name in sections])
+    return list(section_features), label_section_indices
+
+
+def section_feature_indices(schema):
+    """Section feature name -> feature index for per_section metrics, or None when the schema has no section kinds."""
+    section_features, _ = validate_label_sections(schema)
+    if section_features is None:
+        return None
+    return {name: schema["feature_names"].index(name) for name in section_features}
+
+
+def attach_label_masks(records, schema):
+    """Adds label_mask: 1 where the label is judged in the record's section, 0 where the scorer never judges it.
+
+    The deduction labels write 0 for unjudged labels too, but that 0 is not an observed negative,
+    so masked entries are left out of the loss, the metrics and the predictions.
+    """
+    _, label_section_indices = validate_label_sections(schema)
+    label_count = len(schema["label_names"])
+    for record in records:
+        if label_section_indices is None:
+            record["label_mask"] = torch.ones(label_count)
+            continue
+        active_features = record["features"].max(0).values > SECTION_ACTIVE_THRESHOLD
+        record["label_mask"] = torch.tensor([1.0 if indices is None else float(active_features[indices].any().item())
+                                             for indices in label_section_indices])
+    return records
+
+
+def is_section_active(record, feature_index):
+    return record["features"][:, feature_index].max().item() > SECTION_ACTIVE_THRESHOLD
 
 
 def validate_augmentation(config, schema):
@@ -234,34 +301,54 @@ def training_runtime(seed, deterministic):
         torch.backends.cudnn.deterministic = previous_cudnn_deterministic
 
 
-def evaluate(model, records, mean, scale, batch_size):
+def summarize_predictions(losses, predicted, actual, judged):
+    """BCE, micro F1 and per-label counts over the judged (label_mask) entries only; bce is None when none is judged."""
+    true_positive = predicted & actual & judged
+    false_positive = predicted & ~actual & judged
+    false_negative = ~predicted & actual & judged
+    judged_count = judged.sum().item()
+    denominator = 2 * true_positive.sum().item() + false_positive.sum().item() + false_negative.sum().item()
+    per_label = []
+    for count, judged_label_count, tp, fp, fn in zip((actual & judged).sum(0).tolist(), judged.sum(0).tolist(),
+                                                      true_positive.sum(0).tolist(), false_positive.sum(0).tolist(),
+                                                      false_negative.sum(0).tolist()):
+        per_label.append({"positive_count": count, "judged_count": judged_label_count,
+                          "f1": 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0.0})
+    return {"bce": (losses * judged).sum().item() / judged_count if judged_count else None,
+            "micro_f1": 2 * true_positive.sum().item() / denominator if denominator else 0.0,
+            "samples": len(losses),
+            "per_label": per_label}
+
+
+def evaluate(model, records, mean, scale, batch_size, section_features=None):
+    """Metrics over the labels judged in each record; per_section repeats them for each section feature kind.
+
+    section_features maps a section feature name to its index; a section with several active kinds counts in each.
+    """
     model.eval()
     device = next(model.parameters()).device
-    loss_sum = 0.0
-    true_positive = false_positive = false_negative = 0
-    label_counts = torch.zeros(model.classifier.out_features, 4, dtype=torch.int64, device=device)
+    loss_batches, predicted_batches = [], []
     with torch.no_grad():
         for start in range(0, len(records), batch_size):
             batch = records[start:start + batch_size]
             features, lengths = make_batch(batch, mean, scale)
             labels = torch.stack([record["labels"] for record in batch]).to(device)
             logits = model(features.to(device), lengths)
-            loss_sum += nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction="sum").item()
-            predicted = logits >= 0
-            actual = labels.bool()
-            true_positive += (predicted & actual).sum().item()
-            false_positive += (predicted & ~actual).sum().item()
-            false_negative += (~predicted & actual).sum().item()
-            label_counts[:, 0] += actual.sum(0)
-            label_counts[:, 1] += (predicted & actual).sum(0)
-            label_counts[:, 2] += (predicted & ~actual).sum(0)
-            label_counts[:, 3] += (~predicted & actual).sum(0)
-    denominator = 2 * true_positive + false_positive + false_negative
-    return {"bce": loss_sum / (len(records) * model.classifier.out_features),
-            "micro_f1": 2 * true_positive / denominator if denominator else 0.0,
-            "samples": len(records),
-            "per_label": [{"positive_count": count, "f1": 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else 0.0}
-                          for count, tp, fp, fn in label_counts.tolist()]}
+            loss_batches.append(nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction="none").cpu())
+            predicted_batches.append((logits >= 0).cpu())
+    losses = torch.cat(loss_batches)
+    predicted = torch.cat(predicted_batches)
+    actual = torch.stack([record["labels"] for record in records]).bool()
+    judged = torch.stack([record["label_mask"] for record in records]).bool()
+    metrics = summarize_predictions(losses, predicted, actual, judged)
+    if section_features:
+        metrics["per_section"] = {}
+        for name, feature_index in section_features.items():
+            in_section = torch.tensor([is_section_active(record, feature_index) for record in records])
+            if in_section.any():
+                metrics["per_section"][name] = summarize_predictions(losses[in_section], predicted[in_section],
+                                                                     actual[in_section], judged[in_section])
+    return metrics
 
 
 class LSTMBaseline:
@@ -309,6 +396,7 @@ class LSTMBaseline:
             names = schema[key]
             if not isinstance(names, list) or not names or any(not isinstance(name, str) or not name.strip() for name in names) or len(set(names)) != len(names):
                 raise ValueError(f"{key} must contain unique nonempty names")
+        section_features = section_feature_indices(schema)
         augmentation = validate_augmentation(getattr(args, "augmentation", None), schema)
         augmentation_seed = getattr(args, "augmentation_seed", None)
         if augmentation_seed is None:
@@ -319,18 +407,28 @@ class LSTMBaseline:
         data_bytes = Path(args.data).read_bytes()
         data_sha256 = hashlib.sha256(data_bytes).hexdigest()
         records = load_records(args.data, schema["feature_names"], schema["label_names"], sample_rate_hz=sample_rate, data_bytes=data_bytes)
+        attach_label_masks(records, schema)
         splits = {split: [record for record in records if record["split"] == split] for split in ("train", "val", "test")}
         if not splits["train"] or not splits["val"]:
             raise ValueError("Nonempty train and val splits required")
+        for split in ("train", "val"):
+            if not any(record["label_mask"].any() for record in splits[split]):
+                raise ValueError(f"No label is judged in any {split} section; check label_sections and the section features")
         if not splits["test"]:
             warnings.warn("No held-out test split; validation metrics were used for model selection")
         if augmentation is not None:
             for record in splits["train"]:
                 validate_augmentation_bounds(record["features"], schema["feature_names"], augmentation)
         mean, scale = fit_normalization(splits["train"])
-        prevalence = torch.stack([record["labels"] for record in splits["train"]]).mean(0)
-        for name, rate in zip(schema["label_names"], prevalence.tolist()):
-            if rate in (0.0, 1.0):
+        # Prevalence among the train sections that judge the label, so unjudged sections do not dilute it.
+        train_labels = torch.stack([record["labels"] for record in splits["train"]])
+        train_masks = torch.stack([record["label_mask"] for record in splits["train"]])
+        judged_counts = train_masks.sum(0)
+        prevalence = (train_labels * train_masks).sum(0) / judged_counts.clamp(min=1)
+        for name, rate, judged_count in zip(schema["label_names"], prevalence.tolist(), judged_counts.tolist()):
+            if judged_count == 0:
+                warnings.warn(f"Training label {name!r} is not judged in any train section; it cannot be learned")
+            elif rate in (0.0, 1.0):
                 warnings.warn(f"Training label {name!r} has only one class; discrimination cannot be learned")
         model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size, num_layers=num_layers).to(self.device)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
@@ -345,25 +443,28 @@ class LSTMBaseline:
                 features, lengths = make_batch(batch, mean, scale, augmentation, augmentation_generator, augmentation_stats)
                 features = features.to(self.device)
                 labels = torch.stack([record["labels"] for record in batch]).to(self.device)
+                label_masks = torch.stack([record["label_mask"] for record in batch]).to(self.device)
                 optimizer.zero_grad()
-                loss = nn.functional.binary_cross_entropy_with_logits(model(features, lengths), labels)
+                # Mean over the judged labels; with every label judged this equals the plain mean BCE.
+                losses = nn.functional.binary_cross_entropy_with_logits(model(features, lengths), labels, reduction="none")
+                loss = (losses * label_masks).sum() / label_masks.sum().clamp(min=1)
                 if not torch.isfinite(loss):
                     raise ValueError("Nonfinite training loss; check feature magnitudes")
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
             metrics = evaluate(model, splits["val"], mean, scale, args.batch_size)
-            if not math.isfinite(metrics["bce"]):
+            if metrics["bce"] is None or not math.isfinite(metrics["bce"]):
                 raise ValueError("Nonfinite validation loss")
             if metrics["bce"] < best_loss:
                 best_loss, best_state, best_epoch = metrics["bce"], {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}, epoch + 1
         model.load_state_dict(best_state)
-        metrics = {split: evaluate(model, samples, mean, scale, args.batch_size) for split, samples in splits.items() if samples}
+        metrics = {split: evaluate(model, samples, mean, scale, args.batch_size, section_features) for split, samples in splits.items() if samples}
         constant_model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size, num_layers=num_layers).to(self.device)
         with torch.no_grad():
             constant_model.classifier.weight.zero_()
             constant_model.classifier.bias.copy_(torch.logit(prevalence.clamp(1e-6, 1 - 1e-6)).to(self.device))
-        reference_metrics = {split: evaluate(constant_model, samples, mean, scale, args.batch_size) for split, samples in splits.items() if samples}
+        reference_metrics = {split: evaluate(constant_model, samples, mean, scale, args.batch_size, section_features) for split, samples in splits.items() if samples}
         for name, counts in augmentation_stats.items():
             if counts["attempted"] and counts["applied"] / counts["attempted"] < MIN_AUGMENTATION_APPLY_RATE:
                 warnings.warn(f"Augmentation {name!r} applied to less than 10% of attempts; inspect bounds/thresholds and strength")
@@ -415,21 +516,27 @@ class LSTMBaseline:
             raise ValueError("batch_size must be a positive integer")
         schema = self._checkpoint["schema"]
         records = load_records(data_path, schema["feature_names"], schema["label_names"], sample_rate_hz=schema["sample_rate_hz"])
-        return evaluate(self.model, records, self._checkpoint["mean"], self._checkpoint["scale"], batch_size)
+        attach_label_masks(records, schema)
+        return evaluate(self.model, records, self._checkpoint["mean"], self._checkpoint["scale"], batch_size,
+                        section_feature_indices(schema))
 
     def predict(self, data_path):
         self._require_model()
         schema = self._checkpoint["schema"]
         records = load_records(data_path, schema["feature_names"], schema["label_names"], labeled=False, sample_rate_hz=schema["sample_rate_hz"])
+        attach_label_masks(records, schema)
         predictions = []
         self.model.eval()
         with torch.no_grad():
             for record in records:
                 features, lengths = make_batch([record], self._checkpoint["mean"], self._checkpoint["scale"])
                 probabilities = self.model(features.to(self.device), lengths).sigmoid()[0].cpu().tolist()
+                # Labels the scorer never judges in this section were not trained there, so they are not reported.
+                judged_probabilities = {name: probability for name, probability, is_judged
+                                        in zip(schema["label_names"], probabilities, record["label_mask"].tolist()) if is_judged}
                 predictions.append({"run_id": record["run_id"], "section_id": record.get("section_id"),
                                     "schema_version": schema["schema_version"], "model_format_version": self._checkpoint["format_version"],
-                                    "probabilities": dict(zip(schema["label_names"], probabilities))})
+                                    "probabilities": judged_probabilities})
         return predictions
 
     def _require_model(self):

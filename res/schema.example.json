@@ -9,5 +9,17 @@
                     "section_left_turn", "section_right_turn", "section_parking", "section_finish_approach"],
   "continuous_features": ["speed_kmh", "accel_mps2", "yaw_rate_dps", "steering_input", "throttle_input", "brake_input"],
   "label_names": ["stop_failure", "hill_rollback", "over_speed", "insufficient_acceleration", "section_time_over",
-                  "turn_signal_missing", "hazard_light_error", "vehicle_device_error"]
+                  "turn_signal_missing", "hazard_light_error", "vehicle_device_error"],
+  "section_features": ["section_start", "section_acceleration", "section_emergency", "section_hill_stop", "section_signal",
+                       "section_left_turn", "section_right_turn", "section_parking", "section_finish_approach"],
+  "label_sections": {
+    "stop_failure": ["section_hill_stop", "section_emergency"],
+    "hill_rollback": ["section_hill_stop"],
+    "over_speed": "all",
+    "insufficient_acceleration": ["section_acceleration"],
+    "section_time_over": ["section_start", "section_hill_stop"],
+    "turn_signal_missing": ["section_start", "section_left_turn", "section_right_turn", "section_finish_approach"],
+    "hazard_light_error": ["section_emergency"],
+    "vehicle_device_error": "all"
+  }
 }

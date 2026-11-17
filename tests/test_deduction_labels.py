@@ -6,11 +6,11 @@ import tempfile
 import unittest
 
 from src import report
-from src.baseline import load_records
+from src.baseline import load_records, validate_label_sections
 from src.deduction_labels import (APPROACH_SECTION_REASONS, LABEL_NAMES, REASON_LABELS, TRAINING_SECTION_FILE,
                                   UNOBSERVABLE_REASONS, assign_splits, build_dataset, collect_section_labels,
                                   label_session)
-from src.session_predict import SECTION_RESULT_FILE
+from src.session_predict import SECTION_FEATURES, SECTION_RESULT_FILE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Set DRIVER_LICENSE_SIMULATOR_ROOT when the Unity repository is not next to this project.
@@ -81,6 +81,14 @@ class DeductionLabelTests(unittest.TestCase):
         schema = json.loads((PROJECT_ROOT / "res" / "schema.example.json").read_text(encoding="utf-8"))
 
         self.assertEqual(schema["label_names"], LABEL_NAMES)
+
+    def test_SchemaExample_LabelSectionsCoverEveryLabelAndUnitySectionFeature(self):
+        schema = json.loads((PROJECT_ROOT / "res" / "schema.example.json").read_text(encoding="utf-8"))
+
+        _, label_section_indices = validate_label_sections(schema)
+
+        self.assertEqual(schema["section_features"], list(SECTION_FEATURES))
+        self.assertEqual(len(label_section_indices), len(LABEL_NAMES))
 
     def test_ReportInstructions_DescribeEveryLabel(self):
         for label_name in LABEL_NAMES:

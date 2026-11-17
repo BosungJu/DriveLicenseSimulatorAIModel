@@ -138,6 +138,9 @@ REPORT_INSTRUCTIONS = """당신은 운전면허 기능시험 시뮬레이터의 
 [입력 해석]
 - score, max_score, passing_score, is_passed, is_disqualified는 공식 결과입니다.
   다시 계산하거나 변경하지 마세요.
+- is_section_practice가 true이면 코스 일부만 반복한 구간 연습 기록입니다.
+  is_passed와 score는 코스 합격 판정이 아니므로 합격·불합격을 안내하지 말고,
+  "1"에는 연습 구간의 공식 감점 유무와 실격 여부만 안내하세요.
 - sections는 제공된 구간 기록이며 전체 시험 구간의 완료를 보장하지 않습니다.
 - official_deductions는 채점기가 확정한 감점입니다.
   reason은 사유, description은 설명, points는 감점 점수입니다.
@@ -359,6 +362,8 @@ def build_report_input(section_results, predictions):
         "total_deduction": section_results["totalDeduction"],
         "is_passed": section_results["isPassed"],
         "is_disqualified": section_results["isDisqualified"],
+        # Section practice attempts (Unity DrivingTestSession) cover part of the course; older files lack the field.
+        "is_section_practice": section_results.get("isSectionPractice", False),
         "driving_seconds": section_results["recordedSeconds"],
         "ai_model_available": predictions is not None,
         "sections": sections,

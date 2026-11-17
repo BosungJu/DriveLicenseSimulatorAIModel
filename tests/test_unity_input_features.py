@@ -152,12 +152,15 @@ class UnityInputFeatureTests(unittest.TestCase):
                 build_section_records(rows, self.schema["feature_names"], 50, "run")
 
     def test_NewExporterCsv_TrainAndSessionPredict_UsesAllFeatures(self):
+        label_names = self.schema["label_names"]
+        # Each positive is a label the schema judges in that section: the start signal and the emergency stop.
+        positive_label_by_section = {1: label_names.index("turn_signal_missing"), 2: label_names.index("stop_failure")}
         records = []
         for split in ("train", "val", "test"):
             sections = build_section_records(self.rows, self.schema["feature_names"], 50, split + "-run")
             for record in sections:
-                records.append(dict(record, split=split, label_names=self.schema["label_names"],
-                                    labels=self.one_hot_labels(0 if record["section_id"] == 1 else 1)))
+                records.append(dict(record, split=split, label_names=label_names,
+                                    labels=self.one_hot_labels(positive_label_by_section[record["section_id"]])))
         training_path = self.root / "training.jsonl"
         training_path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
         schema_path = self.root / "schema.json"
@@ -175,6 +178,10 @@ class UnityInputFeatureTests(unittest.TestCase):
         self.assertEqual(len(read_driving_log(session / "driving_log.csv")), 3)
         result = predict_session(session, checkpoint, device="cpu")
         self.assertEqual([section["section_id"] for section in result["sections"]], [1, 2])
+        self.assertEqual(sorted(result["sections"][0]["probabilities"]),
+                         ["over_speed", "section_time_over", "turn_signal_missing", "vehicle_device_error"])
+        self.assertEqual(sorted(result["sections"][1]["probabilities"]),
+                         ["hazard_light_error", "over_speed", "stop_failure", "turn_signal_missing", "vehicle_device_error"])
         prepared = [json.loads(line) for line in (session / "sections.jsonl").read_text(encoding="utf-8").splitlines()]
         self.assertEqual(prepared[0]["feature_names"], self.schema["feature_names"])
         for invalid_rate in (float("nan"), float("inf"), 0, "50", True):

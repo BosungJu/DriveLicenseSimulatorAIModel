@@ -173,6 +173,14 @@ class ReportTests(unittest.TestCase):
         self.assertFalse(report_input["ai_model_available"])
         self.assertTrue(all(section["ai_analysis"] is None for section in report_input["sections"]))
 
+    def test_BuildReportInput_SectionPracticeFlag_IsPassedThroughAndDefaultsToCourse(self):
+        practice_input = report.build_report_input(dict(section_results(), isSectionPractice=True), None)
+        course_input = report.build_report_input(section_results(), None)
+
+        self.assertTrue(practice_input["is_section_practice"])
+        self.assertFalse(course_input["is_section_practice"])
+        self.assertIn("is_section_practice가 true", report.REPORT_INSTRUCTIONS)
+
     def test_GenerateReport_WritesModelInputAndReport(self):
         with tempfile.TemporaryDirectory() as directory:
             session_dir = Path(directory)
