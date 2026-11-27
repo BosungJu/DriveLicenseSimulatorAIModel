@@ -11,9 +11,9 @@ import math
 from pathlib import Path
 
 if __package__:
-    from .baseline import LSTMBaseline
+    from .baseline import DEFAULT_LABEL_THRESHOLD, LSTMBaseline
 else:
-    from baseline import LSTMBaseline
+    from baseline import DEFAULT_LABEL_THRESHOLD, LSTMBaseline
 
 DRIVING_LOG_FILE = "driving_log.csv"
 SECTION_RESULT_FILE = "section_results.json"
@@ -22,7 +22,6 @@ PREDICTION_FILE = "predictions.json"
 POINT_NUMBER_COLUMN = "point_number"
 # Unity writes 1 / Time.fixedDeltaTime as float, so 50 Hz may arrive as 49.99999.
 SAMPLE_RATE_TOLERANCE_HZ = 0.01
-DEFAULT_LABEL_THRESHOLD = 0.5
 # Unity CarController: steering is signed, pedals are analog 0~1; driving direction comes from the gear.
 CONTROL_INPUT_RANGES = {"steering_input": (-1.0, 1.0), "throttle_input": (0.0, 1.0), "brake_input": (0.0, 1.0)}
 # Pre-analog schemas (marked by brake_applied) recorded reverse as a negative throttle.
@@ -109,19 +108,33 @@ def write_jsonl(path, records):
 
 
 def summarize_prediction(prediction, threshold):
-    """Adds the labels at or above the threshold; a section without any flagged label is treated as normal."""
-    flagged_labels = [label for label, probability in prediction["probabilities"].items() if probability >= threshold]
-    return dict(prediction, threshold=threshold, flagged_labels=flagged_labels, is_normal=not flagged_labels)
+    """Adds the labels at or above the threshold; a section without any flagged label is treated as normal.
+
+    threshold is one probability for every label, or a label -> probability mapping (checkpoint thresholds); with a
+    mapping the section keeps the thresholds of its judged labels.
+    """
+    probabilities = prediction["probabilities"]
+    is_per_label = isinstance(threshold, dict)
+    if is_per_label:
+        label_thresholds = {label: threshold[label] for label in probabilities}
+    else:
+        label_thresholds = dict.fromkeys(probabilities, threshold)
+    flagged_labels = [label for label, probability in probabilities.items() if probability >= label_thresholds[label]]
+    section_threshold = label_thresholds if is_per_label else threshold
+    return dict(prediction, threshold=section_threshold, flagged_labels=flagged_labels, is_normal=not flagged_labels)
 
 
-def predict_session(session_dir, checkpoint_path, device="auto", threshold=DEFAULT_LABEL_THRESHOLD):
-    if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+def predict_session(session_dir, checkpoint_path, device="auto", threshold=None):
+    """threshold None uses the checkpoint's per-label thresholds; a number flags every label at that probability."""
+    if threshold is not None and (not math.isfinite(threshold) or not 0 <= threshold <= 1):
         raise ValueError("threshold must be a finite probability between 0 and 1")
 
     session_dir = Path(session_dir)
     baseline = LSTMBaseline.load(checkpoint_path, device=device)
     # The checkpoint schema fixes feature order and sample rate for inference.
     schema = baseline.schema
+    if threshold is None:
+        threshold = baseline.label_thresholds
 
     section_results = json.loads((session_dir / SECTION_RESULT_FILE).read_text(encoding="utf-8-sig"))
     recorded_rate_hz = section_results["sampleRateHz"]
@@ -147,8 +160,9 @@ def parse_args(argv=None):
     parser.add_argument("session_dir", help="Session folder exported by ReportManager")
     parser.add_argument("--checkpoint", required=True, help="LSTM checkpoint (.pt) saved by LSTMBaseline")
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--threshold", type=float, default=DEFAULT_LABEL_THRESHOLD,
-                        help="Probability at or above which a label is flagged")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Probability at or above which every label is flagged; "
+                             "default: the per-label thresholds chosen on val and saved in the checkpoint")
     return parser.parse_args(argv)
 
 

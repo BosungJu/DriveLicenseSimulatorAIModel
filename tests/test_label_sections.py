@@ -112,9 +112,42 @@ class LabelSectionTests(unittest.TestCase):
         self.assertEqual([record["label_mask"].tolist() for record in loaded],
                          [[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]])
 
+    def test_AttachLabelMasks_UnjudgedLabels_MaskOnlyThatRecord(self):
+        unjudged_hill = dict(self.record("hill-after", "train", HILL, [0, 0, 0]),
+                             unjudged_labels=["rollback", "device_error"])
+        records = [unjudged_hill, self.record("hill", "train", HILL, [0, 0, 0])]
+        data = "\n".join(json.dumps(record) for record in records).encode("utf-8")
+        loaded = load_records(None, SCHEMA["feature_names"], SCHEMA["label_names"], data_bytes=data)
+
+        attach_label_masks(loaded, SCHEMA)
+
+        self.assertEqual([record["label_mask"].tolist() for record in loaded], [[0.0, 0.0, 0.0], [1.0, 0.0, 1.0]])
+
+    def test_LoadRecords_InvalidUnjudgedLabels_Fail(self):
+        for unjudged_labels, labels in ((["unknown"], [0, 0, 0]), (["rollback", "rollback"], [0, 0, 0]),
+                                        ("rollback", [0, 0, 0]), ([["rollback"]], [0, 0, 0]),
+                                        (["rollback"], [1, 0, 0])):
+            record = dict(self.record("hill", "train", HILL, labels), unjudged_labels=unjudged_labels)
+            with self.subTest(unjudged_labels=unjudged_labels, labels=labels), self.assertRaises(ValueError):
+                load_records(None, SCHEMA["feature_names"], SCHEMA["label_names"],
+                             data_bytes=json.dumps(record).encode("utf-8"))
+
     #endregion
 
     #region Training, evaluation and prediction
+
+    def test_Fit_LogsStartAndEveryEpochWithEta(self):
+        with self.assertLogs("drive_lstm", level="INFO") as logs:
+            self.train_model(self.training_records(), "progress")
+
+        messages = [record.getMessage() for record in logs.records]
+        epoch_messages = [message for message in messages if message.startswith("epoch ")]
+        self.assertIn("4 train sections x 1 = 4 samples, 2 batches/epoch, 3 epochs, 4 val sections", messages[0])
+        self.assertEqual([message.split()[1] for message in epoch_messages], ["1/3", "2/3", "3/3"])
+        self.assertTrue(all("val_bce" in message and "eta" in message for message in epoch_messages))
+        self.assertIn("*best", epoch_messages[0])
+        self.assertTrue(epoch_messages[-1].endswith("eta 0m00s"))
+        self.assertTrue(messages[-1].startswith("Label thresholds chosen on val: rollback"))
 
     def test_Fit_UnjudgedLabelValue_DoesNotChangeTraining(self):
         zero_filled = self.train_model(self.training_records(masked_label_value=0), "zero")

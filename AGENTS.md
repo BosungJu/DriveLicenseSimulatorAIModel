@@ -1,7 +1,7 @@
-## vexp - Context-Aware AI Coding <!-- vexp v3.3.4 -->
+## vexp - Context-Aware AI Coding <!-- vexp v3.5.1 -->
 
 ### Context strategy: call run_pipeline ONCE at task start
-If the task already names the files/symbols to touch, SKIP vexp. Otherwise one
+If the task already names the files/symbols to touch, skip run_pipeline. Otherwise one
 `run_pipeline({ "task": "..." })` returns ranked pivot files with line ranges and
 blast radius. Do NOT open files one by one to find your way around - every extra
 tool call costs a turn. Call it again ONLY when the task moves to a new area.

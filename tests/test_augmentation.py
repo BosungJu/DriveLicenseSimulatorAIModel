@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 import torch
 
-from src.baseline import augment_features, make_batch, parse_args, predict, train, validate_augmentation
+from src.baseline import (AUGMENTATION_STAT_KEYS, augment_features, export_augmented_dataset, load_records, make_batch,
+                          make_copy_batch, parse_args, predict, smoothed_noise, train, validate_augmentation)
 
 
 class AugmentationTests(unittest.TestCase):
@@ -49,6 +50,19 @@ class AugmentationTests(unittest.TestCase):
         features = torch.tensor([[2.0, 0.0]] * 40)
         augmented = self.augment(features, config)
         self.assertLessEqual(torch.diff(augmented[:, 0]).abs().max().item(), 0.004001)
+
+    def test_SmoothedNoise_MatchesRecursiveDefinition(self):
+        for smoothing in (1.0, 0.99, 0.5, 0.1, 0.001):
+            for length in (1, 2, 7, 300, 1500):
+                innovations = torch.rand(length, generator=torch.Generator().manual_seed(length)) * 2 - 1
+                # float64 reference, so float32 accumulation error of the loop itself does not count.
+                expected = innovations.to(torch.float64)
+                for timestep in range(1, length):
+                    expected[timestep] = (1 - smoothing) * expected[timestep - 1] + smoothing * expected[timestep]
+
+                with self.subTest(smoothing=smoothing, length=length):
+                    torch.testing.assert_close(smoothed_noise(innovations, smoothing), expected.to(torch.float32),
+                                               rtol=1e-5, atol=1e-6)
 
     def test_Augment_Seed_ReproducibleAndDifferentSeedsVary(self):
         features = torch.tensor([[2.0, 0.0]] * 10)
@@ -91,8 +105,35 @@ class AugmentationTests(unittest.TestCase):
                 validate_augmentation(config, self.schema)
 
 
+    def test_Augment_FixedValues_KeepRestFramesAndPerturbOthers(self):
+        config = copy.deepcopy(self.config)
+        config["features"]["speed"].update(min=0.0, protected_values=[], fixed_values=[0.0, 5.0])
+        features = torch.tensor([[0.0, 0.0], [2.0, 1.0], [5.0, 0.0], [3.0, 1.0], [0.0, 0.0]])
+
+        augmented = self.augment(features, config)
+
+        torch.testing.assert_close(augmented[[0, 2, 4], 0], features[[0, 2, 4], 0], rtol=0, atol=0)
+        self.assertTrue(torch.all(augmented[[1, 3], 0] != features[[1, 3], 0]))
+        torch.testing.assert_close(augmented[:, 1], features[:, 1])
+
+    def test_Validate_AugmentedCopiesAndFixedValues_AcceptValidAndRejectInvalid(self):
+        valid = copy.deepcopy(self.config)
+        valid["augmented_copies"] = 4
+        valid["features"]["speed"]["fixed_values"] = [0, 1.5]
+        self.assertEqual(validate_augmentation(valid, self.schema), valid)
+
+        invalid_variants = [dict(self.config, augmented_copies=value) for value in (0, -1, 1.5, True, None)]
+        for value in ([True], [float("inf")], 0):
+            config = copy.deepcopy(self.config)
+            config["features"]["speed"]["fixed_values"] = value
+            invalid_variants.append(config)
+        invalid_variants.append(dict(self.config, unknown=1))
+        for config in invalid_variants:
+            with self.subTest(config=config), self.assertRaises(ValueError):
+                validate_augmentation(config, self.schema)
+
     def test_Augment_Statistics_ReportAcceptedRejectedAndUnchangedCandidates(self):
-        stats = {"speed": {key: 0 for key in ("attempted", "applied", "unchanged", "skipped", "rejected_bounds", "rejected_threshold")}}
+        stats = {"speed": {key: 0 for key in AUGMENTATION_STAT_KEYS}}
         generator = torch.Generator().manual_seed(7)
         augment_features(torch.tensor([[2.0, 0.0]]), self.schema["feature_names"], self.config, generator, stats)
         augment_features(torch.tensor([[0.0, 0.0]]), self.schema["feature_names"], self.config, generator, stats)
@@ -102,7 +143,67 @@ class AugmentationTests(unittest.TestCase):
         zero_strength["features"]["speed"].update(bias_max=0, noise_max=0)
         augment_features(torch.tensor([[2.0, 0.0]]), self.schema["feature_names"], zero_strength, generator, stats)
         self.assertEqual(stats["speed"], {"attempted": 3, "applied": 1, "unchanged": 1,
-                                          "skipped": 1, "rejected_bounds": 0, "rejected_threshold": 1})
+                                          "skipped": 1, "rejected_bounds": 0, "rejected_threshold": 1, "kept_frames": 0})
+
+    def keep_frame_config(self, noise_max=0.5):
+        config = copy.deepcopy(self.config)
+        config["features"]["speed"].update(bias_max=0, noise_max=noise_max, smoothing=1.0, min=0.0, max=10.0,
+                                           protected_values=[1.0], on_violation="keep_frame")
+        return config
+
+    def test_Augment_KeepFrameAtProtectedValue_KeepsThatFrameAndPerturbsOthers(self):
+        # A frame exactly on a protected value changes membership under any nonzero noise, so it must stay original.
+        features = torch.tensor([[5.0, 0.0], [1.0, 1.0], [5.0, 0.0]])
+        stats = {"speed": {key: 0 for key in AUGMENTATION_STAT_KEYS}}
+
+        augmented = augment_features(features, self.schema["feature_names"], self.keep_frame_config(),
+                                     torch.Generator().manual_seed(7), stats)
+
+        self.assertEqual(augmented[1, 0].item(), 1.0)
+        self.assertTrue(torch.all(augmented[[0, 2], 0] != features[[0, 2], 0]))
+        torch.testing.assert_close(augmented[:, 1], features[:, 1])
+        self.assertEqual(stats["speed"]["kept_frames"], 1)
+        self.assertEqual(stats["speed"]["applied"], 1)
+        self.assertEqual(stats["speed"]["rejected_threshold"], 0)
+
+    def test_Augment_KeepFrameNearBoundsAndThreshold_PreservesFrameRelations(self):
+        # Frames within noise_max of min, max and the protected value violate under some seeds.
+        features = torch.tensor([[0.1, 0.0], [0.9, 0.0], [1.1, 0.0], [9.9, 0.0], [5.0, 0.0]] * 20)
+        stats = {"speed": {key: 0 for key in AUGMENTATION_STAT_KEYS}}
+
+        for seed in range(5):
+            augmented = augment_features(features, self.schema["feature_names"], self.keep_frame_config(),
+                                         torch.Generator().manual_seed(seed), stats)
+            speed = augmented[:, 0]
+
+            with self.subTest(seed=seed):
+                self.assertTrue(torch.all((speed >= 0.0) & (speed <= 10.0)))
+                torch.testing.assert_close(speed < 1.0, features[:, 0] < 1.0)
+                torch.testing.assert_close(speed > 1.0, features[:, 0] > 1.0)
+                self.assertTrue(torch.all(speed[4::5] != features[4::5, 0]))
+
+        self.assertGreater(stats["speed"]["kept_frames"], 0)
+        self.assertEqual(stats["speed"]["applied"], 5)
+        self.assertEqual(stats["speed"]["rejected_bounds"] + stats["speed"]["rejected_threshold"], 0)
+
+    def test_Augment_RejectFeatureDefault_DropsWholeFeatureOnSingleViolation(self):
+        config = self.keep_frame_config()
+        del config["features"]["speed"]["on_violation"]
+        features = torch.tensor([[5.0, 0.0], [1.0, 1.0], [5.0, 0.0]])
+
+        torch.testing.assert_close(self.augment(features, config), features, rtol=0, atol=0)
+
+    def test_Validate_OnViolation_AcceptsPoliciesAndRejectsUnknown(self):
+        for policy in ("reject_feature", "keep_frame"):
+            config = copy.deepcopy(self.config)
+            config["features"]["speed"]["on_violation"] = policy
+            self.assertEqual(validate_augmentation(config, self.schema), config)
+
+        for policy in ("keep", None, 1):
+            config = copy.deepcopy(self.config)
+            config["features"]["speed"]["on_violation"] = policy
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                validate_augmentation(config, self.schema)
 
 
 class TrainingConfigurationTests(unittest.TestCase):
@@ -211,6 +312,98 @@ class TrainingConfigurationTests(unittest.TestCase):
         with patch("src.baseline.make_batch", side_effect=observe_batch), contextlib.redirect_stdout(io.StringIO()):
             predict(argparse.Namespace(data=str(data_path), checkpoint=args.output, device="cpu"))
         self.assertTrue(all(not enabled for _, enabled in calls))
+
+    def write_export_inputs(self, augmentation):
+        schema = {"schema_version": 1, "sample_rate_hz": 50, "feature_names": ["speed", "brake"],
+                  "continuous_features": ["speed"], "label_names": ["improvement"]}
+        self.write_json("schema.json", schema)
+        records = [dict(schema, run_id="train-0", split="train", features=[[1.5, 0], [2.25, 1], [0, 1]], labels=[1]),
+                   dict(schema, run_id="val-0", split="val", features=[[5, 0], [5, 1]], labels=[0])]
+        (self.root / "data.jsonl").write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+        config_path = self.write_json("config.json", {"data": "data.jsonl", "schema": "schema.json",
+                                                      "output": "model.pt", "seed": 7, "augmentation": augmentation})
+        return records, config_path
+
+    def test_Augment_ExportsOriginalPlusSeededCopiesAndUnchangedVal(self):
+        augmentation = {"probability": 1, "augmented_copies": 3, "features": {"speed": {
+            "bias_max": 0.1, "noise_max": 0.02, "smoothing": 0.5, "min": 0, "max": 10, "protected_values": [],
+            "fixed_values": [0]}}}
+        records, config_path = self.write_export_inputs(augmentation)
+        output = self.root / "data" / "augmented.jsonl"
+        args = parse_args(["augment", "--config", str(config_path), "--output", str(output)])
+
+        summary = export_augmented_dataset(args)
+        exported = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual([(record["split"], record.get("augmentation_copy")) for record in exported],
+                         [("train", 0), ("train", 1), ("train", 2), ("train", 3), ("val", None)])
+        self.assertEqual(exported[0]["features"], records[0]["features"])
+        self.assertEqual(exported[4], records[1])
+        for copy in exported[1:4]:
+            self.assertEqual([frame[1] for frame in copy["features"]], [0, 1, 1])
+            self.assertEqual(copy["features"][2][0], 0)
+            self.assertNotEqual(copy["features"][0][0], 1.5)
+        self.assertEqual(len({json.dumps(copy["features"]) for copy in exported[1:4]}), 3)
+        self.assertEqual(summary["records_by_split"], {"train": 4, "val": 1})
+        self.assertEqual(summary["augmentation_stats"]["speed"]["applied"], 3)
+        meta = json.loads(output.with_suffix(".meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["augmentation_seed"], summary["augmentation_seed"])
+        # The export trains as a plain dataset, and the same seed reproduces it byte for byte.
+        loaded = load_records(output, ["speed", "brake"], ["improvement"], sample_rate_hz=50)
+        self.assertEqual(len(loaded), 5)
+        first_export = output.read_bytes()
+        export_augmented_dataset(args)
+        self.assertEqual(output.read_bytes(), first_export)
+
+    def test_Augment_WithoutCopiesOrOutput_Fails(self):
+        augmentation = {"probability": 1, "features": {"speed": {
+            "bias_max": 0.1, "noise_max": 0.02, "smoothing": 0.5, "min": 0, "max": 10, "protected_values": []}}}
+        _, config_path = self.write_export_inputs(augmentation)
+        args = parse_args(["augment", "--config", str(config_path), "--output", str(self.root / "out.jsonl")])
+
+        with self.assertRaisesRegex(ValueError, "augmented_copies"):
+            export_augmented_dataset(args)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["augment", "--config", str(config_path)])
+
+    def test_Train_AugmentedCopies_EachEpochSeesOriginalPlusFreshCopies(self):
+        schema = {"schema_version": 1, "sample_rate_hz": 50, "feature_names": ["speed", "brake"],
+                  "continuous_features": ["speed"], "label_names": ["improvement"]}
+        augmentation = {"probability": 1, "augmented_copies": 4, "features": {"speed": {
+            "bias_max": 0.1, "noise_max": 0.02, "smoothing": 0.1, "min": -10, "max": 10, "protected_values": [0]}}}
+        self.write_json("schema.json", schema)
+        originals = {"train-0": [[-1, 0], [-1, 1]], "train-1": [[1, 0], [1, 1]]}
+        records = [dict(schema, run_id=run_id, split="train", features=features, labels=[int(features[0][0] > 0)])
+                   for run_id, features in originals.items()]
+        records.append(dict(schema, run_id="val-0", split="val", features=[[5, 0], [5, 1]], labels=[1]))
+        (self.root / "data.jsonl").write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+        epochs = 2
+        config_path = self.write_json("config.json", {
+            "data": "data.jsonl", "schema": "schema.json", "output": "model.pt", "seed": 42, "device": "cpu",
+            "epochs": epochs, "batch_size": 3, "hidden_size": 4, "learning_rate": 0.01, "augmentation": augmentation})
+        args = parse_args(["train", "--config", str(config_path)])
+        train_samples = []
+
+        # Observes training batches only; the final train-split evaluation also calls make_batch with originals.
+        def observe_copy_batch(records, entries, augmentation, generator, augmentation_stats):
+            batch = make_copy_batch(records, entries, augmentation, generator, augmentation_stats)
+            train_samples.extend((record["run_id"], record["features"].clone()) for record in batch)
+            return batch
+
+        with patch("src.baseline.make_copy_batch", side_effect=observe_copy_batch), \
+                contextlib.redirect_stdout(io.StringIO()):
+            train(args)
+
+        for run_id, features in originals.items():
+            original = torch.tensor(features, dtype=torch.float32)
+            samples = [sample for sample_run_id, sample in train_samples if sample_run_id == run_id]
+            unchanged = [sample for sample in samples if torch.equal(sample, original)]
+            augmented = [sample for sample in samples if not torch.equal(sample, original)]
+            self.assertEqual((len(unchanged), len(augmented)), (epochs, epochs * 4))
+            self.assertEqual(len({tuple(sample[:, 0].tolist()) for sample in augmented}), epochs * 4)
+        checkpoint = torch.load(args.output, weights_only=True)
+        self.assertEqual(checkpoint["augmentation_stats"]["speed"]["attempted"], len(originals) * epochs * 4)
+        self.assertEqual(checkpoint["augmentation"]["augmented_copies"], 4)
 
 
 if __name__ == "__main__":

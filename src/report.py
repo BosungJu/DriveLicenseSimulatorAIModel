@@ -7,6 +7,7 @@ Input:
 Output:
     report_input.json
     report.json
+    report_error.json (only when the run fails; Unity shows the session as failed)
 
 Requires the OPENAI_API_KEY environment variable.
 """
@@ -14,20 +15,21 @@ Requires the OPENAI_API_KEY environment variable.
 import argparse
 import json
 import os
+import re
 import tempfile
+from collections import namedtuple
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 if __package__:
     from .session_predict import (
-        DEFAULT_LABEL_THRESHOLD,
         PREDICTION_FILE,
         SECTION_RESULT_FILE,
         predict_session,
     )
 else:
     from session_predict import (
-        DEFAULT_LABEL_THRESHOLD,
         PREDICTION_FILE,
         SECTION_RESULT_FILE,
         predict_session,
@@ -36,7 +38,26 @@ else:
 
 REPORT_INPUT_FILE = "report_input.json"
 REPORT_FILE = "report.json"
-DEFAULT_OPENAI_MODEL = "gpt-5-mini"
+# Unity ReportGenerationFiles reads this file; keep the field names in sync.
+REPORT_ERROR_FILE = "report_error.json"
+DEFAULT_OPENAI_MODEL = "gpt-6.2-sol"
+
+# A response that fails parse_report is sent back with the error, up to this many requests in total.
+MAX_REPORT_ATTEMPTS = 3
+# Per-request limits of the OpenAI client. Worst case stays under the Unity runner's default 600-second timeout:
+# 3 attempts x (1 + 1 retry) x 60 seconds.
+REQUEST_TIMEOUT_SECONDS = 60.0
+REQUEST_MAX_RETRIES = 1
+
+REPORT_CORRECTION_PROMPT = (
+    "직전 응답이 검증에 실패했습니다: {error}\n"
+    "같은 입력과 규칙으로 보고서를 다시 작성하고 유효한 JSON 객체만 출력하세요."
+)
+
+# OpenAI error messages may echo a partially masked key.
+API_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9_\-*]+")
+
+ReportCorrection = namedtuple("ReportCorrection", ["response_text", "error"])
 
 
 # Unity 공식 감점 사유(DrivingScoreSheet.cs의 DrivingDeductionReason)의 한국어 이름, enum 순서
@@ -71,6 +92,8 @@ DEDUCTION_REASON_NAMES = {
     "WiperNotOperated": "출발 전 와이퍼 미조작",
     "SeatBeltNotFastened": "출발 전 안전띠 미착용",
     "EngineNotStarted": "출발 전 시동 미조작",
+    "GearNotOperated": "출발 전 기어 미조작",
+    "StartTurnSignalNotOperated": "출발 전 방향지시등 미조작",
 }
 
 
@@ -91,6 +114,8 @@ CATEGORY_REASONS = {
         "EngineNotStarted",
         "HeadlightNotOperated",
         "WiperNotOperated",
+        "GearNotOperated",
+        "StartTurnSignalNotOperated",
     },
     "road_driving": {
         "LaneKeepingLineTouch",
@@ -258,7 +283,7 @@ AI 라벨은 공식 감점 범주를 학습한 후보입니다. 공식 감점과
 - section_time_over: 출발이나 경사로 통과가 제한시간을 넘었을 가능성
 - turn_signal_missing: 회전·출발·종료 시 방향지시등을 켜지 않았을 가능성
 - hazard_light_error: 돌발 정지 전후 비상등 조작이 늦거나 맞지 않았을 가능성
-- vehicle_device_error: 안전띠·시동·전조등 조작 누락이나 시동 꺼짐 가능성
+- vehicle_device_error: 안전띠·시동·전조등·기어 조작 누락이나 시동 꺼짐 가능성
 - 모르는 라벨은 추측하지 마세요.
   필요하면 해당 구간에 해석되지 않은 AI 개선점 후보가 있다고만 설명하세요.
 
@@ -561,7 +586,8 @@ def parse_report(report_text, expected_scores):
 
         if len(text) > limit:
             raise ValueError(
-                f"UI field {field} exceeds the {limit}-character limit"
+                f"UI field {field} exceeds the {limit}-character limit "
+                f"({len(text)} characters)"
             )
 
     return report
@@ -600,7 +626,8 @@ def save_report(report_path, report):
             temporary_path.unlink()
 
 
-def request_report(report_input, model):
+def request_report(report_input, model, correction=None):
+    """Request one report; a correction resends the rejected response with its validation error."""
     # API를 호출할 때만 OpenAI 패키지를 가져온다.
     from openai import OpenAI
 
@@ -610,18 +637,84 @@ def request_report(report_input, model):
             "before generating a report"
         )
 
-    client = OpenAI()
+    client = OpenAI(
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        max_retries=REQUEST_MAX_RETRIES,
+    )
+
+    input_messages = [{
+        "role": "user",
+        "content": json.dumps(
+            report_input,
+            ensure_ascii=False,
+        ),
+    }]
+
+    if correction is not None:
+        input_messages.append({
+            "role": "assistant",
+            "content": correction.response_text,
+        })
+        input_messages.append({
+            "role": "user",
+            "content": REPORT_CORRECTION_PROMPT.format(
+                error=correction.error
+            ),
+        })
 
     response = client.responses.create(
         model=model,
         instructions=REPORT_INSTRUCTIONS,
-        input=json.dumps(
-            report_input,
-            ensure_ascii=False,
-        ),
+        input=input_messages,
     )
 
     return response.output_text
+
+
+def request_validated_report(report_input, expected_scores, model):
+    """Request until a response passes parse_report; the last validation error is raised."""
+    correction = None
+
+    for attempt in range(1, MAX_REPORT_ATTEMPTS + 1):
+        report_text = request_report(
+            report_input,
+            model,
+            correction=correction,
+        )
+
+        try:
+            return parse_report(
+                report_text,
+                expected_scores,
+            )
+
+        except ValueError as exception:
+            if attempt == MAX_REPORT_ATTEMPTS:
+                raise
+
+            correction = ReportCorrection(
+                str(report_text),
+                str(exception),
+            )
+
+
+def save_report_error(session_dir, stage, exception):
+    """Record why the run failed so Unity can show the session as failed."""
+    message = API_KEY_PATTERN.sub(
+        "sk-***",
+        f"{type(exception).__name__}: {exception}",
+    )
+
+    error = {
+        "failedAt": datetime.now().astimezone().isoformat(),
+        "stage": stage,
+        "message": message,
+    }
+
+    (Path(session_dir) / REPORT_ERROR_FILE).write_text(
+        json.dumps(error, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def generate_report(
@@ -666,19 +759,18 @@ def generate_report(
         encoding="utf-8",
     )
 
-    report_text = request_report(
-        report_input,
-        model,
-    )
-
     # 검증에 실패하면 정상 보고서를 저장하거나 덮어쓰지 않는다.
-    report = parse_report(
-        report_text,
+    report = request_validated_report(
+        report_input,
         expected_scores,
+        model,
     )
 
     report_path = session_dir / REPORT_FILE
     save_report(report_path, report)
+
+    # 이전 실행의 실패 기록이 완료된 보고서를 가리지 않게 한다.
+    (session_dir / REPORT_ERROR_FILE).unlink(missing_ok=True)
 
     return report_path
 
@@ -711,7 +803,11 @@ def parse_args(argv=None):
     parser.add_argument(
         "--threshold",
         type=float,
-        default=DEFAULT_LABEL_THRESHOLD,
+        default=None,
+        help=(
+            "Flag every label at this probability "
+            "(default: per-label thresholds saved in the checkpoint)"
+        ),
     )
 
     parser.add_argument(
@@ -740,20 +836,31 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    stage = "predict"
 
-    if args.checkpoint:
-        predict_session(
+    try:
+        if args.checkpoint:
+            predict_session(
+                args.session_dir,
+                args.checkpoint,
+                args.device,
+                args.threshold,
+            )
+
+        stage = "report"
+
+        report_path = generate_report(
             args.session_dir,
-            args.checkpoint,
-            args.device,
-            args.threshold,
+            args.model,
+            require_predictions=not args.without_predictions,
         )
 
-    report_path = generate_report(
-        args.session_dir,
-        args.model,
-        require_predictions=not args.without_predictions,
-    )
+    except Exception as exception:
+        # 실패 기록만 남기고 원래 예외로 0이 아닌 종료 코드를 유지한다.
+        if Path(args.session_dir).is_dir():
+            save_report_error(args.session_dir, stage, exception)
+
+        raise
 
     print(f"Report written to {report_path}")
 

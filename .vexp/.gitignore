@@ -28,3 +28,4 @@ backups/
 daily-limit.json
 git-hooks.declined
 building
+daemon.lock

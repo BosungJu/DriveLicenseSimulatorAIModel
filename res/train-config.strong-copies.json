@@ -1,0 +1,80 @@
+{
+  "data": "train/sections.jsonl",
+  "schema": "schema.example.json",
+  "output": "../artifacts/lstm-strong-copies.pt",
+  "device": "auto",
+  "deterministic": true,
+  "epochs": 20,
+  "batch_size": 32,
+  "hidden_size": 64,
+  "num_layers": 1,
+  "learning_rate": 0.001,
+  "seed": 42,
+  "augmentation_seed": 1000045,
+  "augmentation": {
+    "probability": 1.0,
+    "augmented_copies": 4,
+    "features": {
+      "speed_kmh": {
+        "bias_max": 0,
+        "noise_max": 3.0,
+        "smoothing": 0.05,
+        "min": 0,
+        "max": 120,
+        "protected_values": [0, 1, 20],
+        "fixed_values": [0],
+        "on_violation": "keep_frame"
+      },
+      "accel_mps2": {
+        "bias_max": 0,
+        "noise_max": 0.6,
+        "smoothing": 0.2,
+        "min": -500,
+        "max": 500,
+        "protected_values": [],
+        "fixed_values": [0],
+        "on_violation": "keep_frame"
+      },
+      "yaw_rate_dps": {
+        "bias_max": 0,
+        "noise_max": 3.5,
+        "smoothing": 0.1,
+        "min": -180,
+        "max": 180,
+        "protected_values": [],
+        "fixed_values": [0],
+        "on_violation": "keep_frame"
+      },
+      "steering_input": {
+        "bias_max": 0.03,
+        "noise_max": 0.1,
+        "smoothing": 0.1,
+        "min": -1,
+        "max": 1,
+        "protected_values": [-0.5, -0.05, 0.05, 0.5],
+        "fixed_values": [-1, 0, 1],
+        "on_violation": "keep_frame"
+      },
+      "throttle_input": {
+        "bias_max": 0.03,
+        "noise_max": 0.08,
+        "smoothing": 0.1,
+        "min": 0,
+        "max": 1,
+        "protected_values": [],
+        "fixed_values": [0, 1],
+        "on_violation": "keep_frame"
+      },
+      "brake_input": {
+        "bias_max": 0.03,
+        "noise_max": 0.08,
+        "smoothing": 0.1,
+        "min": 0,
+        "max": 1,
+        "protected_values": [],
+        "fixed_values": [0, 1],
+        "on_violation": "keep_frame"
+      }
+    }
+  }
+}

@@ -207,11 +207,69 @@ class ReportTests(unittest.TestCase):
 
             for response_text in ("## 총평", json.dumps(wrong_score_report)):
                 with self.subTest(response=response_text), \
-                        mock.patch.object(report, "request_report", return_value=response_text), \
+                        mock.patch.object(report, "request_report", return_value=response_text) as request_report, \
                         self.assertRaises(ValueError):
-                    report.generate_report(session_dir, require_predictions=False)
+                    try:
+                        report.generate_report(session_dir, require_predictions=False)
+                    finally:
+                        self.assertEqual(request_report.call_count, report.MAX_REPORT_ATTEMPTS)
 
             self.assertFalse((session_dir / "report.json").exists())
+
+    def test_GenerateReport_InvalidResponseThenValid_ResendsValidationErrorAndSavesReport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory)
+            (session_dir / "section_results.json").write_text(json.dumps(section_results()), encoding="utf-8-sig")
+            too_long_comment = json.dumps(dict(UI_REPORT, **{"1": "가" * 46}), ensure_ascii=False)
+
+            with mock.patch.object(report, "request_report",
+                                   side_effect=[too_long_comment, json.dumps(UI_REPORT)]) as request_report:
+                report_path = report.generate_report(session_dir, require_predictions=False)
+
+            self.assertEqual(json.loads(report_path.read_text(encoding="utf-8")), UI_REPORT)
+            first_call, second_call = request_report.call_args_list
+            self.assertIsNone(first_call.kwargs["correction"])
+            correction = second_call.kwargs["correction"]
+            self.assertEqual(correction.response_text, too_long_comment)
+            self.assertIn("UI field 1 exceeds the 45-character limit (46 characters)", correction.error)
+
+    def test_GenerateReport_Success_RemovesStaleReportError(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory)
+            (session_dir / "section_results.json").write_text(json.dumps(section_results()), encoding="utf-8-sig")
+            (session_dir / report.REPORT_ERROR_FILE).write_text("{}", encoding="utf-8")
+
+            with mock.patch.object(report, "request_report", return_value=json.dumps(UI_REPORT)):
+                report.generate_report(session_dir, require_predictions=False)
+
+            self.assertFalse((session_dir / report.REPORT_ERROR_FILE).exists())
+
+    def test_Main_ReportFailure_WritesReportErrorAndReraises(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory)
+            (session_dir / "section_results.json").write_text(json.dumps(section_results()), encoding="utf-8-sig")
+            api_error = RuntimeError("Incorrect API key provided: sk-proj-abc***xyz")
+
+            with mock.patch.object(report, "request_report", side_effect=api_error), \
+                    self.assertRaises(RuntimeError):
+                report.main([str(session_dir), "--without-predictions"])
+
+            error = json.loads((session_dir / report.REPORT_ERROR_FILE).read_text(encoding="utf-8"))
+            self.assertEqual(error["stage"], "report")
+            self.assertEqual(error["message"], "RuntimeError: Incorrect API key provided: sk-***")
+            self.assertIsInstance(error["failedAt"], str)
+            self.assertFalse((session_dir / "report.json").exists())
+
+    def test_Main_PredictionFailure_RecordsPredictStage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory)
+
+            with mock.patch.object(report, "predict_session", side_effect=FileNotFoundError("model.pt")), \
+                    self.assertRaises(FileNotFoundError):
+                report.main([str(session_dir), "--checkpoint", "model.pt"])
+
+            error = json.loads((session_dir / report.REPORT_ERROR_FILE).read_text(encoding="utf-8"))
+            self.assertEqual(error["stage"], "predict")
 
     def test_GenerateReport_MissingPredictions_FailsUnlessAllowed(self):
         with tempfile.TemporaryDirectory() as directory:

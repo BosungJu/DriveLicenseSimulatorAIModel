@@ -1,50 +1,58 @@
 {
   "file_hashes": {
-    ".claude/CLAUDE.md": "ff7019661a7d0ad1310c6555deb7e4688471ebb440c646a4bfff0dcc6ac1abcf",
-    ".claude/hooks/vexp-hint.sh": "41674da3dc1a2bb3ba98da3b51e51f4cdab1295bfdf9a6c289a3b215b06816c4",
-    ".claude/hooks/vexp-restore.sh": "12fd8c5ea21b89feaa7d2639856489cf1598cce3e299ea92417d16651a0ade57",
-    ".codex/vexp-hint.sh": "c02416b0fdf0fbd02bc71e7fdcf4809fcc2631a120473eb4d2f3775915be49ad",
-    "AGENTS.md": "ff7019661a7d0ad1310c6555deb7e4688471ebb440c646a4bfff0dcc6ac1abcf",
+    ".claude/CLAUDE.md": "7dc04139b82585383fbc236ade9c97c879ea250e6b86b803177c904589d47cce",
+    ".claude/hooks/vexp-hint.sh": "53dea41c3bb8afa248f7c42267c8dd9a99d1d96bb4ab5d850bca157f2cc846f5",
+    ".claude/hooks/vexp-restore.sh": "3dfb39390cc161062ef85412af35c370dcb0a1dce3f9776e0ac8935d9dfa6792",
+    ".claude/hooks/vexp-subagent.sh": "af7324b47a30be999633644f65c391bba6c4d055a72d2a2e71ee34f6ef9c3ef1",
+    ".codex/vexp-hint.sh": "b77fef054764900579be7ba38133b8e47b11dec9f6cd472f5149224bd07f528a",
+    "AGENTS.md": "7dc04139b82585383fbc236ade9c97c879ea250e6b86b803177c904589d47cce",
     "AI_Development_Context.md": "6adf0c0b21c12a4a452823b8224a8f76c252aa1e08ff04a9b5910564e73c0f95",
     "CLAUDE.md": "e7853d902778dad2a349217bab21fa5d606cb23551d3cdb009f21cc3249f81cd",
     "README.md": "c8586cf5fc384a33dfa4fd3cf44cfceec5b93de51c70af6bb61a73c6a261a167",
-    "docs/lstm-baseline.md": "6d65f99df1ec1e91f89af1b3c926217a4b4f7801efe42b70b641c4b9f341041b",
+    "docs/lstm-baseline.md": "53f2ad08b889d7e9b2d0d6adc0712050163fea8b016fa487ff2f4ca87afc1266",
     "docs/lstm-review.md": "bd0321ba76bcd3be05de52a99609610ffef057fadf833f609d3c892b5f59c35c",
     "docs/unity-input-review.md": "4b937ca14fd7afe18495f00e8e26e9621984fdaeb7e3d20cb35681ce2f7ca4cb",
-    "src/baseline.py": "fcdcbe242abf4949529d895316c592d71ccfc316bafe10ff950ad0a0759a6867",
+    "src/baseline.py": "c2eb6462a6ce37adacd7ad7fdf22516923374f112e26d8c7d330437f489b1049",
+    "src/deduction_labels.py": "9e2179c9a304df21e88c78ba8be8cee94e417d995a249a79d5fe2253949f9866",
     "src/model.py": "e293c54becda355a7fdcd1e7d8ba7863b12253c140c8222e95c93e950bead136",
-    "src/report.py": "617c838c0ebdf01374bcdc28e3d63fe472247dcc9a0e4e90f5d6da734aadb67a",
-    "src/session_predict.py": "b3a15ba9cf93d38f3ca6d2804a85b03a5b1e9a5e6c230fe7ea15c908369cfbfc",
+    "src/report.py": "f1767240de77358e20c5f7ad91ddd4997393936fb9b5cc57301b12da16458ea7",
+    "src/session_predict.py": "15c9cb9b72c3ef59787973666566dbc5dcea38668b0d45d596a1025d79f28ca8",
     "tests/test_augmentation.py": "61027b5f244310c74ec334c298f524dd5b643eb91d59f595314f2ff05a29a272",
     "tests/test_baseline.py": "fbe36b1d584448583bcf3c5b48bec67ad35bb0ce830bb2598a59ac88115927a9",
+    "tests/test_deduction_labels.py": "353b4e12fe7b1c7dcbb33dd7244dd29157f6d8b46f7e5ff2a7ddd72acff54294",
+    "tests/test_label_sections.py": "97c1b1c04765c7118e4a6c1368ba36f641250ef4ad15e741d47699327b647e64",
     "tests/test_model.py": "76c6133bd519ff728db3cf502bbf5a7c170a0143dcc310b3c0ecaa473ea51abd",
-    "tests/test_session_report.py": "6309c3ae54b65896d1c47d25d440413d6adfb9b35af600a3de776b17e28dfcfc",
-    "tests/test_unity_input_features.py": "6d2ca98452e95fef62b8e6fe12ff86f2fc4f21ee9e3b422e553b78db96c8c4b1",
+    "tests/test_session_report.py": "0af45bf0dfcd4c2950d9aa3516986f95b1e6b62310f037882d6ef9747f933c13",
+    "tests/test_unity_input_features.py": "6465109535aa15d2b12e77ede0c85f1d11240add3df7076cd7e2c3dfb44d6987",
     "tools/claude-review-mcp.mjs": "1df3d7de53abf5d14afb848a2332816d0d28abaf220864fa332c973dc5eab8b1",
     "tools/claude-review-mcp.test.mjs": "715dd62c0a7afd5f1cc27bf1f13481f88686a1b463af281730894332ca19b532"
   },
-  "indexed_at_commit": "15b18e4cc98345f47d94f36bec64b0f9171c13b0",
-  "indexed_at_timestamp": "2026-11-17T08:00:04.969954300+00:00",
+  "indexed_at_commit": "68a9c9a2ab4d50883d066f7ed87ebeb7c24eb043",
+  "indexed_at_timestamp": "2026-11-25T10:45:35.294540300+00:00",
   "languages": {
+    "bash": {
+      "calls": 0,
+      "nodes": 4
+    },
     "javascript": {
       "calls": 0,
       "nodes": 3
     },
     "markdown": {
       "calls": 0,
-      "nodes": 52
+      "nodes": 56
     },
     "python": {
-      "calls": 208,
-      "nodes": 126
+      "calls": 237,
+      "nodes": 183
     }
   },
   "parser_version": "3.4.3",
   "schema_version": 3,
   "stats": {
-    "total_edges": 345,
-    "total_files": 22,
-    "total_nodes": 181
+    "total_edges": 444,
+    "total_files": 26,
+    "total_nodes": 246
   },
-  "vexp_version": "3.3.1"
+  "vexp_version": "3.5.1"
 }

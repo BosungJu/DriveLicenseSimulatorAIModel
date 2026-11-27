@@ -79,6 +79,9 @@ loaded.save("artifacts/lstm-copy.pt")
 | features.<이름>.smoothing | 0 초과 1 이하; 작을수록 노이즈가 완만하게 변함 |
 | features.<이름>.min / max | feature의 물리적 허용 범위 |
 | features.<이름>.protected_values | 넘거나 이탈하면 안 되는 판정 경계값 목록 |
+| features.<이름>.fixed_values | 선택; 원본이 이 값과 정확히 같은 프레임은 변형하지 않음(정지 0, 페달 0/1, 최대 조향 ±1) |
+| features.<이름>.on_violation | 선택; `reject_feature`(기본) 또는 `keep_frame`. 범위 이탈·경계 통과 시 구간의 feature 증대 전체를 취소할지, 위반 프레임만 원본으로 둘지 |
+| augmentation.augmented_copies | 선택; 지정하면 epoch마다 train 구간 하나를 원본 1개 + 증대본 N개로 학습 |
 
 설정 파일의 data/schema/output 상대 경로는 **설정 파일 폴더** 기준입니다. 명령줄에서 지정하는 상대 경로는 현재 작업 폴더 기준이며, 명령줄 값이 JSON 값보다 우선합니다. JSON 변수 이름은 위처럼 snake_case입니다. 알 수 없는 설정 키와 잘못된 강도/학습 인자는 오류로 처리합니다. 설정 변경은 다음 학습 실행에 적용됩니다. 각 checkpoint에 실제 하이퍼파라미터와 증대 설정을 저장합니다.
 
@@ -88,13 +91,33 @@ loaded.save("artifacts/lstm-copy.pt")
 
 feature별 bias는 `[-bias_max, +bias_max]` 균등분포로 구간당 한 번 뽑습니다. 노이즈 후보도 대칭 균등분포이며 `noise[t] = (1 - smoothing) * noise[t-1] + smoothing * candidate[t]`로 평활화합니다. 첫 노이즈는 첫 후보 값입니다. 따라서 총 변동의 절댓값은 bias_max + noise_max 이내입니다. `smoothing=1`은 독립 노이즈입니다. 경계 보호/범위 검사로 거절된 증대를 제외하면 대칭 분포이며, 거절 때문에 최종 적용 분포는 비대칭이 될 수 있습니다.
 
-증대할 항목은 스키마 `continuous_features`에 명시된 연속형 feature만 가능합니다. 이진 제동·명령·구간 ID는 이 목록에 넣지 마세요. 설정에 없는 feature는 그대로 유지됩니다. 후보가 범위를 벗어나거나 보호 경계의 아래/같음/위 관계를 바꾸면 **그 구간의 해당 feature 증대를 취소**합니다. 원본이 설정 범위를 벗어나면 오류입니다. 다른 feature는 별도로 처리합니다.
+증대할 항목은 스키마 `continuous_features`에 명시된 연속형 feature만 가능합니다. 이진 제동·명령·구간 ID는 이 목록에 넣지 마세요. 설정에 없는 feature는 그대로 유지됩니다. 후보가 범위를 벗어나거나 보호 경계의 아래/같음/위 관계를 바꾸면 기본값(`reject_feature`)에서는 **그 구간의 해당 feature 증대를 취소**합니다. `on_violation: "keep_frame"`이면 위반한 프레임만 원본 값으로 두고 나머지 프레임은 증대합니다. 두 방식 모두 **기록된 프레임**에서 설정한 범위와 보호 경계의 관계만 유지합니다. Unity 판정은 `Update` 주기와 구간 통과 순간의 값을 쓰고 텔레메트리는 `FixedUpdate`로 기록하므로, 프레임 사이 값이나 보호 경계로 지정하지 않은 판정 기준까지 라벨 보존을 보장하지는 않습니다. `keep_frame`은 원본으로 돌아간 프레임 앞뒤에 노이즈 크기만큼의 불연속이 생겨, 속도처럼 매끄러운 신호에서는 물리적으로 불가능한 급변(예: 0.02초에 2 km/h 이상)이 생길 수 있습니다. 원본이 설정 범위를 벗어나면 오류입니다. 다른 feature는 별도로 처리합니다.
 
 예시 설정은 speed_kmh에 bias 최대 0.05 km/h, noise 최대 0.02 km/h를 적용하고 0/1/20 km/h를 보호합니다. 이 값들은 효과가 입증된 값이 아니라 조정용 시작 예시입니다. 실제 판정 설정에 맞게 경계를 바꾸세요. 조향도 `features`에 같은 구조로 추가할 수 있지만, 조향 안정성처럼 변화율에 의존하는 라벨은 경계값 검사만으로 보존을 보장할 수 없습니다. 모든 라벨의 의미가 유지되는 feature/강도만 허용해야 합니다. 이 증대는 작은 관측 변동에 대한 강건성을 실험하는 용도이며 물리적으로 다른 주행 생성은 Unity 재시뮬레이션이 필요합니다.
 
+### 원본 + N개 증대본 (`augmented_copies`)
+
+`augmented_copies`가 없으면 위처럼 batch마다 구간을 probability 확률로 변형본 하나로 바꿉니다. `augmented_copies: 4`를 지정하면 epoch마다 train 구간마다 원본 1개와 새로 뽑은 증대본 4개, 즉 5개 표본을 섞어 학습합니다. 증대본은 파일로 저장하지 않고 epoch마다 새로 만들며, 각 증대본도 probability 확률로 변형되므로 보통 1.0으로 둡니다. 한 epoch의 학습 step이 (1+N)배가 되므로 epoch 수 비교에 주의하세요. val/test는 원본만 사용합니다.
+
+`res/train-config.bias-copies.json`은 연속형 feature 6개(speed_kmh, accel_mps2, yaw_rate_dps, steering_input, throttle_input, brake_input)에 원본+4개를 적용한 시작 예시입니다. 구간 전체에 일정한 bias는 운전자 입력(steering_input, throttle_input, brake_input)에만 주고, 차량 상태(speed_kmh, accel_mps2, yaw_rate_dps)는 `bias_max: 0`으로 시점별 노이즈만 줍니다. accel_mps2 범위 ±500은 충돌 순간 같은 급변 값(실측 330 m/s²)을 포함하기 위한 값입니다. 페달·조향·속도는 대부분의 프레임이 정확히 0이어서 `fixed_values` 없이 대칭 노이즈를 주면 범위 이탈로 거의 모든 구간의 증대가 취소됩니다. 그래서 정지·미조작·포화 값은 `fixed_values`로 그대로 두고 조작 중인 프레임만 변형합니다. 모든 프레임이 고정값인 구간은 unchanged로 집계됩니다. 강도는 효과가 검증된 값이 아니며, feature 간 물리적 일관성(예: 속도와 가속도)은 보장하지 않습니다.
+
+이 설정의 변화량은 train feature 표준편차의 0.07~1.4%로, 프레임 간 변화보다도 작아 증대본이 원본과 거의 같습니다. 또 속도는 0 근처 프레임 때문에 약 절반의 구간에서 증대가 취소됩니다. `res/train-config.strong-copies.json`은 같은 보호 경계(속도 0/1/20 km/h, Unity 정지·제한 속도 기준)를 유지하면서 `keep_frame`으로 바꾸고 강도를 표준편차의 약 1~5%로 키운 설정입니다(취소 0%, 경계 근처 속도 프레임 약 5%만 원본 유지). 조향에는 Unity 깜빡이 자동 취소 기준(`VehicleSystems`의 준비 0.5, 취소 0.05; 스크립트 기본값)을 ±0.5, ±0.05 보호 경계로 넣어, 증대가 깜빡이 상태와 모순되는 조향을 만들지 않게 합니다. 아래 학습 결과는 이 조향 경계를 넣기 전 설정으로 얻은 값입니다. 이 설정으로 한 번 학습한 결과(seed 42)는 val BCE 0.147, test BCE 0.452로, 기존 설정(0.155, 0.284)보다 나아지지 않았습니다. 양성 라벨 대부분(turn_signal_missing, vehicle_device_error)이 증대하지 않는 이진 feature에 좌우되므로 연속형 feature 증대만으로는 과적합을 줄이기 어렵습니다. val 양성이 3개뿐이라 단일 seed 비교는 신뢰도가 낮습니다. `res/train-config.strong-nobias-copies.json`은 같은 설정에서 운전자 입력의 bias만 0으로 둔 비교용입니다. 같은 seed에서 val BCE 0.146, test BCE 0.478로 bias가 있는 설정과 차이가 거의 없었습니다.
+
+### 증대 데이터 파일로 남기기 (`augment`)
+
+`augment` 명령은 학습과 같은 설정 파일로 train 구간마다 원본 1개와 `augmented_copies`개의 증대본을 고정 seed(`augmentation_seed`)로 만들어 JSONL로 저장합니다. val/test는 원본 그대로 넣어 파일 하나로 바로 학습할 수 있습니다. train 레코드에는 `augmentation_copy`(0 = 원본)가 붙고, 증대된 연속형 feature의 바뀐 값만 다시 쓰며 나머지 값은 원본 텍스트를 유지합니다. 같은 설정·seed·원본이면 같은 파일이 나옵니다. 옆에 `.meta.json`으로 원본 경로·SHA-256, 증대 설정, seed, split별 레코드 수, 적용 통계를 기록합니다.
+
+```powershell
+.\.venv\Scripts\python.exe src/baseline.py augment --config res/train-config.bias-copies.json --output res/data/augmented_sections.jsonl
+# 저장된 증대 데이터로 학습할 때는 augmentation 없이(이중 증대 방지)
+.\.venv\Scripts\python.exe src/baseline.py train --data res/data/augmented_sections.jsonl --schema res/schema.example.json --output artifacts/lstm-from-file.pt
+```
+
+학습 중 증대(`augmented_copies`)는 epoch마다 새 변형을 만들고, 파일 증대는 한 번 뽑은 변형을 고정해 재사용합니다. 학습 중 증대와 같은 seed라도 뽑는 순서가 달라 표본은 같지 않습니다. 파일은 원본의 약 (1+N)배 크기입니다(현재 데이터 기준 약 127MB). GitHub는 100MB가 넘는 파일을 거부하므로 저장소에 넣으려면 Git LFS를 쓰거나 커밋에서 제외하세요.
+
 증대 없음(probability 0), noise만(bias_max 0), bias+noise를 별도 output과 동일 원본 split으로 비교하세요. test 성능으로 설정을 반복 선택하지 말고 val에서 선택한 뒤 test를 평가하세요. `augmentation`을 생략하거나 null로 설정하면 기존 학습 경로를 그대로 사용합니다. 증대만 별도 JSON 파일로 분리하려면 `--augmentation 파일경로`로 덮어쓸 수도 있습니다.
 
-학습 종료 출력과 checkpoint의 `augmentation_stats`에서 feature별 attempted/applied/unchanged/skipped/rejected_bounds/rejected_threshold 횟수를 확인할 수 있습니다. attempted는 확률 선택 후 후보를 만든 횟수, applied는 실제 값이 달라진 횟수입니다. 시도 대비 적용률이 10%보다 낮으면 경고합니다. 정지 프레임처럼 보호 경계와 정확히 같은 값이 있으면 해당 구간의 feature 증대가 모두 취소될 수 있으므로, 이 통계로 강도 조정 효과를 확인하세요. 원본 train 범위는 학습 시작 전에 전체 검사합니다.
+학습 종료 출력과 checkpoint의 `augmentation_stats`에서 feature별 attempted/applied/unchanged/skipped/rejected_bounds/rejected_threshold/kept_frames 횟수를 확인할 수 있습니다. attempted는 확률 선택 후 후보를 만든 횟수, applied는 실제 값이 달라진 횟수입니다. kept_frames만 구간이 아니라 프레임 단위이며, `keep_frame`에서 원본으로 둔 프레임 수입니다. 시도 대비 적용률이 10%보다 낮으면 경고합니다. 정지 프레임처럼 보호 경계와 정확히 같은 값이 있으면 해당 구간의 feature 증대가 모두 취소될 수 있으므로, 이 통계로 강도 조정 효과를 확인하세요. 원본 train 범위는 학습 시작 전에 전체 검사합니다.
 
 ## 데이터 계약 v1
 
@@ -112,7 +135,7 @@ JSONL의 각 행은 구간 하나입니다. 학습 행 예시:
 
 - 관측은 고정 Hz로 수집하거나 사전에 리샘플합니다. 시간 간격은 메타데이터만으로 검증할 수 없으므로 수집 계층이 보장해야 합니다. 단위와 실제 적용 입력의 범위를 feature 이름 및 수집 문서로 고정하세요. 50 Hz는 예시입니다.
 - `features`는 패딩 없는 T × F 유한 수치 배열입니다. 빈 구간과 결측/NaN/Inf는 거부합니다. feature 이름과 순서는 schema 및 checkpoint와 정확히 일치해야 합니다.
-- 라벨 이름은 구성 가능합니다. 기본 라벨은 아래 [감점 기반 라벨](#감점-기반-라벨)의 공식 감점 범주입니다. `1`은 확인된 양성, `0`은 확인된 음성입니다. 미평가·적용 불가 항목을 0으로 채우지 마세요. v1은 결측 라벨을 지원하지 않으므로 모든 항목이 평가된 표본만 사용합니다.
+- 라벨 이름은 구성 가능합니다. 기본 라벨은 아래 [감점 기반 라벨](#감점-기반-라벨)의 공식 감점 범주입니다. `1`은 확인된 양성, `0`은 확인된 음성입니다. 구간에서 판정됐지만 결과를 알 수 없는 라벨은 0으로 쓰고 선택 필드 `unjudged_labels`(라벨 이름 목록)에 넣으면 그 레코드에서만 손실·평가에서 제외됩니다. 이 목록의 라벨이 1이면 오류입니다.
 - `split`은 train/val/test 중 하나입니다. train과 val은 필수, test는 선택입니다. 동일 run_id의 구간들이 split을 넘으면 오류입니다. 새 운전자에 대한 평가에는 익명 driver_id도 지정하세요. 지정된 driver_id의 split 일관성도 검증합니다. driver_id를 생략하면 운전자 단위 누수를 감지할 수 없습니다.
 - 맵·물리·판정 설정 버전을 통일한 데이터로 시작하세요. 감점 결과나 라벨을 직접 드러내는 값을 feature로 넣으면 평가가 왜곡될 수 있습니다.
 - 추론 행에는 split/label_names/labels가 필요 없습니다. run_id, feature_names, features, schema_version, sample_rate_hz는 필수입니다.
@@ -174,7 +197,7 @@ Unity 수동 확인: 코스 주행 중 조향 양방향, 가속·브레이크 �
 
 ### 감점 기반 라벨
 
-`src/deduction_labels.py`는 각 세션 폴더의 `training_sections.jsonl`에 같은 세션 `section_results.json`의 공식 감점을 구간(pointNumber) 단위로 붙입니다. 라벨 1은 "시뮬레이터 채점기가 이 구간에서 해당 범주로 감점 또는 실격 처리했다"는 뜻이고, 0은 그런 기록이 없다는 뜻입니다. 전문가 라벨이 아니라 공식 채점 결과를 모방하는 약지도 라벨입니다. 구간 종류는 section_* feature로 함께 입력되므로, 모델은 어떤 채점 규칙이 적용되는 구간인지 알고 라벨을 학습합니다.
+`src/deduction_labels.py`는 각 세션 폴더의 `training_sections.jsonl`에 같은 세션 `section_results.json`의 공식 감점을 구간(pointNumber) 단위로 붙입니다. `TrainingDataCollector` 없이 기록되어 `training_sections.jsonl`이 없는 세션은 `driving_log.csv`에서 같은 형식의 구간 레코드를 만듭니다(run_id는 세션 폴더 이름, feature는 `time_s,point_number,heading_deg,pos_x,pos_z` 뒤의 열, sample_rate_hz는 Unity처럼 소수 3자리 반올림). 이 경우 driver_id가 없어 run 단위로 split하며, Unity와 달리 잘못된 표본이 있는 구간을 건너뛰지 않고 세션 전체를 오류로 처리합니다. 라벨 1은 "시뮬레이터 채점기가 이 구간에서 해당 범주로 감점 또는 실격 처리했다"는 뜻이고, 0은 그런 기록이 없다는 뜻입니다. 전문가 라벨이 아니라 공식 채점 결과를 모방하는 약지도 라벨입니다. 구간 종류는 section_* feature로 함께 입력되므로, 모델은 어떤 채점 규칙이 적용되는 구간인지 알고 라벨을 학습합니다.
 
 ```powershell
 # AIReport 폴더(세션 폴더들의 부모) 또는 개별 세션 폴더를 여러 개 지정
@@ -189,9 +212,11 @@ Unity 수동 확인: 코스 주행 중 조향 양방향, 가속·브레이크 �
 | over_speed | OverSpeed, AccelerationEntryTooFast, AccelerationExitTooFast |
 | insufficient_acceleration | AccelerationTooSlow |
 | section_time_over | StartTimeOver, HillPassTimeOver |
-| turn_signal_missing | TurnSignalMissing, StartSignalMissing, FinishSignalMissing |
+| turn_signal_missing | TurnSignalMissing, StartSignalMissing, FinishSignalMissing, StartTurnSignalNotOperated |
 | hazard_light_error | EmergencyHazardLate, EmergencyHazardNotOff, EmergencyHazardEarly |
-| vehicle_device_error | SeatBeltNotFastened, SeatBeltNotWorn, EngineNotStarted, HeadlightNotOperated, EngineStalled |
+| vehicle_device_error | SeatBeltNotFastened, SeatBeltNotWorn, EngineNotStarted, HeadlightNotOperated, EngineStalled, GearNotOperated |
+
+GearNotOperated(N 기어 + 주차 브레이크)와 StartTurnSignalNotOperated(좌측 방향지시등)는 출발 구간의 무작위 기기조작 지시 판정이며, 각각 기어·주차 브레이크와 방향지시등 feature로 관측할 수 있습니다.
 
 라벨에서 제외한 사유와 이유: LaneKeepingLineTouch·ParkingLineTouch(차선과 차량 위치가 feature에 없음), SignalViolation·SignalLongStop(신호등 상태가 feature에 없음), ParkingTimeOver·ParkingBrakeNotApplied(여러 T_TEST 구간에 걸친 판정), CourseTimeOver(코스 전체 시간), WiperNotOperated(와이퍼 미기록). 이 감점들도 보고서의 공식 감점과 능력 점수에는 그대로 반영됩니다.
 
@@ -199,7 +224,8 @@ Unity 수동 확인: 코스 주행 중 조향 양방향, 가속·브레이크 �
 
 - 감점은 채점기가 기록한 pointNumber 구간의 라벨이 됩니다. 구간 종료 시점 판정도 끝나는 구간에 기록됩니다.
 - FinishSignalMissing은 종료 지점 진입 시 기록되지만 직전 진입 구간을 판정한 결과이므로 직전 구간에 붙입니다. 종료 지점은 진입과 동시에 코스가 끝나 표본이 없습니다.
-- 채점표는 첫 실격만 기록하므로, 실격 구간 **이후** 구간은 실격형 결함이 있어도 0이 될 수 있습니다. 이런 구간은 데이터셋에서 제외합니다. 실격 구간 자체는 유지하지만, 같은 구간에서 첫 실격 뒤에 일어난 두 번째 실격형 결함은 기록되지 않는 한계가 있습니다.
+- Unity `DrivingScoreSheet`는 첫 실격만 기록하고, 이후에도 일반 감점은 계속 기록합니다. 그래서 첫 실격 구간과 그 이후 구간은 데이터셋에 **유지**하되, 실격 사유(`DISQUALIFYING_REASONS`: StartTimeOver, HillNotStopped, HillRollbackOver, HillPassTimeOver, SeatBeltNotWorn, SignalViolation)를 가진 라벨(stop_failure, hill_rollback, section_time_over, vehicle_device_error)의 **0만** `unjudged_labels`로 표시해 손실·평가에서 뺍니다. 기록된 1과 나머지 라벨(over_speed, insufficient_acceleration, turn_signal_missing, hazard_light_error)은 그대로 학습합니다. `tests/test_deduction_labels.py`가 Unity의 `Disqualify(DrivingDeductionReason.X)` 호출과 이 목록을 비교합니다.
+- 출력 요약의 `masked_after_disqualification`은 판정 불가 라벨이 있는 구간 수입니다.
 - split은 driver_id(없으면 run_id) 단위로 seed에 따라 재현 가능하게 나눕니다. 같은 run_id 안에서 driver_id가 섞여 있거나, 그룹 수가 train/val(/test)을 채우기에 부족하면 오류입니다.
 
 ### 감점 사유 동기화
@@ -234,9 +260,43 @@ Unity `DrivingScoreSheet.cs`의 `DrivingDeductionReason`을 기준으로 세 표
 
 ## 학습과 결과 해석
 
+`train`은 시작할 때 장치·train 구간 수·epoch당 표본/배치 수를, 매 epoch 끝에 train 평균 BCE, val BCE, 최저 val 갱신 표시(`*best`), 경과 시간과 남은 시간 추정(eta)을 stderr에 출력합니다. stdout에는 마지막 결과 JSON만 나오므로 결과를 파일로 받으면서도 진행을 볼 수 있습니다. eta는 지금까지의 평균 epoch 시간으로 계산합니다. Python에서 `LSTMBaseline.fit`을 직접 호출할 때는 `logging.basicConfig(level=logging.INFO)`로 `drive_lstm` 로그를 켜세요.
+
+```powershell
+# 터미널에서 진행 로그를 보면서 결과 JSON은 파일로 저장
+.\.venv\Scripts\python.exe src/baseline.py train --config res/train-config.bias-copies.json > artifacts/train-result.json
+# 다른 곳에서 실행 중인 학습의 stderr를 파일로 남겼다면 실시간으로 확인
+Get-Content artifacts/train-progress.log -Wait
+```
+
 정규화는 train의 실제 프레임만 사용합니다. 표준편차가 1e-6보다 작은 feature는 scale 1을 사용해 상수 feature의 입력 증폭을 피합니다. 가변 길이 배치는 packing으로 패딩을 제외합니다. 최소 val BCE를 기록한 가중치를 저장하고 test는 선택 완료 후 평가합니다. CPU/CUDA에서 seed와 결정적 알고리즘을 설정합니다. 환경 간 비트 단위 재현성은 보장하지 않습니다.
 
-출력은 split별 BCE, micro F1, 라벨별 양성 수/F1이며 F1은 확률 0.5 기준입니다. `per_label` 순서는 출력 label_names와 같습니다. train 라벨 빈도의 상수 예측 baseline도 같은 split에서 평가합니다. 단일 클래스 train 라벨은 경고합니다. 불균형/양성 없는 평가 라벨의 F1은 단독 성능 근거로 사용하지 마세요. 임계값 튜닝, PR 기반 평가, 가중 손실은 실제 라벨 분포 확인 후 추가할 항목입니다.
+### 세션 단위 교차 검증 (`cross_validate.py`)
+
+val은 세션 5개에 양성이 몇 개뿐이라, 한 번의 학습으로 고른 epoch이나 설정 비교는 우연에 크게 좌우됩니다. `src/cross_validate.py`는 학습 설정을 세션 단위 k-fold로 평가합니다.
+
+- **입력**: `baseline.py train`과 같은 설정 파일과 명령줄 덮어쓰기(`--hidden-size` 등), fold 수(`--folds`, 기본 5), 서로 다른 seed 목록(`--seeds`, 기본 42 43). 원본 데이터여야 합니다. split이 train/val/test가 아니거나, `augment`로 만든 증대본(`augmentation_copy` ≥ 1)이 있거나, 한 세션이 test와 train/val에 걸쳐 있으면 오류입니다. `--results`가 입력 데이터·스키마 경로면 거부합니다.
+- **처리**: test 구간은 제외하고 train·val 구간을 합칩니다. 세션(`driver_id`, 없으면 `run_id`)을 나누지 않고 fold에 배정하며, 양성이 많은 세션부터 그 라벨 양성이 가장 적은 fold에 넣어 양성을 고르게 퍼뜨립니다. 같은 데이터면 항상 같은 fold가 나옵니다. fold × seed마다 새 모델을 그 fold를 val로 학습하고 epoch별 val BCE를 기록합니다. 증대 seed는 학습 seed에서 유도하므로(`augmentation_seed` 무시) seed마다 다른 증대본을 씁니다. checkpoint는 임시 폴더에 쓰고 지웁니다.
+- **출력**: fold 구성(세션, 구간 수, 라벨별 양성 수), run별 epoch 곡선, 요약 JSON. 요약의 `selected_epochs`는 모든 run의 epoch별 val BCE 평균이 가장 낮은 epoch 수이고, `selected_mean_val_bce`/`selected_std_val_bce`가 그때의 평균·표준편차입니다. 설정 비교에는 이 값을 쓰고, 같은 fold의 상수 예측 기준선 `mean_prevalence_val_bce`보다 낮은지 확인하세요. `mean_best_epoch_val_bce`는 run마다 자기 val로 고른 최저값이라 낙관적입니다. 모든 run은 fold 크기와 관계없이 같은 가중치입니다.
+- **F1·정밀도·재현율**: 선택된 epoch에서 확률 0.5 기준으로 계산합니다. fold마다 양성이 몇 개뿐이라 fold별 F1을 평균하지 않고, 모든 run의 TP/FP/FN을 합친 뒤 나눕니다(`selected_val_micro`, 라벨별 `selected_val_per_label`, fold별 `selected_val_micro_f1_by_fold`, epoch별 `pooled_val_micro_f1_by_epoch`). 분모가 0이면(표시한 것도, 양성도 없음) null입니다. 같은 fold val로 라벨별 기준값을 고르면 낙관적이므로 기준값 조정은 하지 않습니다. 각 seed가 모든 세션을 한 번씩 검증하므로 개수는 seed 수만큼 곱해져 있습니다.
+
+```powershell
+.\.venv\Scripts\python.exe src/cross_validate.py --config res/train-config.bias-copies.json --folds 5 --seeds 42 43 --results artifacts/cv-bias-copies.json
+# 설정 덮어쓰기는 train과 같은 옵션으로; --seed와 --output은 run마다 정하므로 쓸 수 없음
+.\.venv\Scripts\python.exe src/cross_validate.py --config res/train-config.bias-copies.json --hidden-size 32 --results artifacts/cv-h32.json
+```
+
+`train-config.bias-copies.json`을 5 fold × seed 42, 43으로 평가한 결과(`artifacts/cv-bias-copies.json`)는 9 epoch에서 평균 val BCE 0.184 ± 0.138로, 모든 fold에서 상수 예측 기준선(평균 0.290)보다 낮았습니다. 평균 곡선은 5~13 epoch에서 0.184~0.201로 평탄하고 이후 천천히 오릅니다. 표준편차는 대부분 fold 간 난이도 차이(양성이 몰린 세션이 있는 fold 0: 0.446, fold 4: 0.057)이며 같은 fold의 seed 간 차이는 작으므로, 설정 비교는 같은 fold끼리 짝지어 보세요. 9 epoch의 확률 0.5 기준 합산 val F1은 0.581(정밀도 0.818, 재현율 0.450)입니다. 라벨별로는 turn_signal_missing 0.717, stop_failure 0.545, over_speed 0.476이고 vehicle_device_error와 section_time_over는 하나도 맞히지 못했습니다(0.000). epoch별 F1은 2~9 epoch에서 0.17에서 0.58로 오른 뒤 0.55~0.60에 머뭅니다.
+
+학습 결과 JSON에도 `best_epoch`와 `epoch_history`(epoch별 train/val BCE와 확률 0.5 기준 val 라벨별 TP/FP/FN)가 들어가고, 평가 지표의 `per_label`에도 라벨별 `true_positive`/`false_positive`/`false_negative`가 들어갑니다. test는 설정을 모두 고른 뒤 마지막에 한 번만 평가하세요.
+
+### 라벨별 판정 기준값
+
+학습이 끝나면 선택된 모델로 val 확률을 계산해 라벨마다 F1이 가장 높은 기준값을 고릅니다. 기준값은 감점으로 표시한 가장 낮은 확률과 그다음 확률의 중간에 두어 val 표본 위에 걸치지 않게 합니다. val에 그 라벨의 판정된 양성과 음성이 모두 있어야 하며, 없으면 0.5를 유지합니다. 같은 F1이면 높은 기준값(덜 표시)을 고릅니다. 기준값은 checkpoint의 `label_thresholds`에 저장되고, 학습 출력의 `lstm_tuned_thresholds`가 이 기준값으로 계산한 split별 지표입니다. 기준값을 val로 골랐으므로 val 지표는 낙관적이며, **test 지표가 독립 추정치**입니다. val 양성이 몇 개뿐이면 기준값이 그 몇 개에 맞춰지므로 데이터가 늘면 다시 학습하세요.
+
+`session_predict.py`와 `report.py`는 `--threshold`를 생략하면 checkpoint의 라벨별 기준값을 쓰고, 각 구간의 `threshold`에 판정 라벨별 기준값을 기록합니다. `--threshold 0.5`처럼 숫자를 주면 모든 라벨에 그 값을 씁니다. 기준값이 없는 이전 checkpoint는 모든 라벨 0.5입니다.
+
+출력은 split별 BCE, micro F1, 라벨별 양성 수/F1이며 `lstm`의 F1은 확률 0.5 기준입니다. `per_label` 순서는 출력 label_names와 같습니다. train 라벨 빈도의 상수 예측 baseline도 같은 split에서 평가합니다. 단일 클래스 train 라벨은 경고합니다. 불균형/양성 없는 평가 라벨의 F1은 단독 성능 근거로 사용하지 마세요. 임계값 튜닝, PR 기반 평가, 가중 손실은 실제 라벨 분포 확인 후 추가할 항목입니다.
 
 Checkpoint는 스키마, 정규화, 가중치, 선택 epoch, 실행 인자, 버전, 데이터 SHA-256 및 평가 결과를 포함합니다. 추론은 checkpoint 통계를 재사용하고 개선점 후보 확률만 JSONL로 출력합니다. 이 확률은 보정된 신뢰도나 관측 근거가 아닙니다. 실제 안내는 별도 근거 확인과 규칙 경로가 필요합니다.
 
