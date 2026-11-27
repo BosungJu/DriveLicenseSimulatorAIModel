@@ -99,7 +99,7 @@ feature별 bias는 `[-bias_max, +bias_max]` 균등분포로 구간당 한 번 �
 
 `augmented_copies`가 없으면 위처럼 batch마다 구간을 probability 확률로 변형본 하나로 바꿉니다. `augmented_copies: 4`를 지정하면 epoch마다 train 구간마다 원본 1개와 새로 뽑은 증대본 4개, 즉 5개 표본을 섞어 학습합니다. 증대본은 파일로 저장하지 않고 epoch마다 새로 만들며, 각 증대본도 probability 확률로 변형되므로 보통 1.0으로 둡니다. 한 epoch의 학습 step이 (1+N)배가 되므로 epoch 수 비교에 주의하세요. val/test는 원본만 사용합니다.
 
-`res/train-config.bias-copies.json`은 연속형 feature 6개(speed_kmh, accel_mps2, yaw_rate_dps, steering_input, throttle_input, brake_input)에 원본+4개를 적용한 시작 예시입니다. 구간 전체에 일정한 bias는 운전자 입력(steering_input, throttle_input, brake_input)에만 주고, 차량 상태(speed_kmh, accel_mps2, yaw_rate_dps)는 `bias_max: 0`으로 시점별 노이즈만 줍니다. accel_mps2 범위 ±500은 충돌 순간 같은 급변 값(실측 330 m/s²)을 포함하기 위한 값입니다. 페달·조향·속도는 대부분의 프레임이 정확히 0이어서 `fixed_values` 없이 대칭 노이즈를 주면 범위 이탈로 거의 모든 구간의 증대가 취소됩니다. 그래서 정지·미조작·포화 값은 `fixed_values`로 그대로 두고 조작 중인 프레임만 변형합니다. 모든 프레임이 고정값인 구간은 unchanged로 집계됩니다. 강도는 효과가 검증된 값이 아니며, feature 간 물리적 일관성(예: 속도와 가속도)은 보장하지 않습니다.
+`res/train-config.bias-copies.json`은 연속형 feature 6개(speed_kmh, accel_mps2, yaw_rate_dps, steering_input, throttle_input, brake_input)에 원본+4개를 적용한 시작 예시입니다. 구간 전체에 일정한 bias는 운전자 입력(steering_input, throttle_input, brake_input)에만 주고, 차량 상태(speed_kmh, accel_mps2, yaw_rate_dps)는 `bias_max: 0`으로 시점별 노이즈만 줍니다. accel_mps2 범위 ±1000은 충돌 순간 같은 급변 값(실측 최대 602 m/s², 2026-11-25 세션)을 포함하기 위한 값입니다. 원본이 범위를 벗어나면 학습이 중단되고, 교차 검증은 val 세션도 train fold로 쓰므로 모든 split의 값을 포함해야 합니다. 페달·조향·속도는 대부분의 프레임이 정확히 0이어서 `fixed_values` 없이 대칭 노이즈를 주면 범위 이탈로 거의 모든 구간의 증대가 취소됩니다. 그래서 정지·미조작·포화 값은 `fixed_values`로 그대로 두고 조작 중인 프레임만 변형합니다. 모든 프레임이 고정값인 구간은 unchanged로 집계됩니다. 강도는 효과가 검증된 값이 아니며, feature 간 물리적 일관성(예: 속도와 가속도)은 보장하지 않습니다.
 
 이 설정의 변화량은 train feature 표준편차의 0.07~1.4%로, 프레임 간 변화보다도 작아 증대본이 원본과 거의 같습니다. 또 속도는 0 근처 프레임 때문에 약 절반의 구간에서 증대가 취소됩니다. `res/train-config.strong-copies.json`은 같은 보호 경계(속도 0/1/20 km/h, Unity 정지·제한 속도 기준)를 유지하면서 `keep_frame`으로 바꾸고 강도를 표준편차의 약 1~5%로 키운 설정입니다(취소 0%, 경계 근처 속도 프레임 약 5%만 원본 유지). 조향에는 Unity 깜빡이 자동 취소 기준(`VehicleSystems`의 준비 0.5, 취소 0.05; 스크립트 기본값)을 ±0.5, ±0.05 보호 경계로 넣어, 증대가 깜빡이 상태와 모순되는 조향을 만들지 않게 합니다. 아래 학습 결과는 이 조향 경계를 넣기 전 설정으로 얻은 값입니다. 이 설정으로 한 번 학습한 결과(seed 42)는 val BCE 0.147, test BCE 0.452로, 기존 설정(0.155, 0.284)보다 나아지지 않았습니다. 양성 라벨 대부분(turn_signal_missing, vehicle_device_error)이 증대하지 않는 이진 feature에 좌우되므로 연속형 feature 증대만으로는 과적합을 줄이기 어렵습니다. val 양성이 3개뿐이라 단일 seed 비교는 신뢰도가 낮습니다. `res/train-config.strong-nobias-copies.json`은 같은 설정에서 운전자 입력의 bias만 0으로 둔 비교용입니다. 같은 seed에서 val BCE 0.146, test BCE 0.478로 bias가 있는 설정과 차이가 거의 없었습니다.
 
@@ -216,6 +216,24 @@ Unity 수동 확인: 코스 주행 중 조향 양방향, 가속·브레이크 �
 | hazard_light_error | EmergencyHazardLate, EmergencyHazardNotOff, EmergencyHazardEarly |
 | vehicle_device_error | SeatBeltNotFastened, SeatBeltNotWorn, EngineNotStarted, HeadlightNotOperated, EngineStalled, GearNotOperated |
 
+#### OBS 2.1 패키지와 train 전용 세션 (`--train-only`)
+
+OBS 2.1 패키지(`runs/<id>/label.json` + `runs/<id>/reports/`의 Unity 세션)는 패키지 폴더, `runs` 폴더, 개별 run 폴더 중 무엇을 지정해도 됩니다. run_id는 run 폴더 이름입니다. 각 run은 출발부터 목표 구간까지 자동 주행하므로 `label.json`의 `scope` [시작, 끝) 구간만 사용합니다. 끝 지점은 출구 경계일 뿐입니다. scope 앞 구간은 run마다 거의 같은 자동 주행이 반복되므로 쓰지 않습니다. 라벨은 run 전체의 `section_results.json`에서 만들고, 실격 마스크도 같은 규칙을 적용합니다.
+
+`--train-only`로 지정한 세션은 항상 train에 들어가고 val/test 분할에서 빠집니다. 나머지 세션의 분할은 바뀌지 않습니다. OBS21처럼 한 자동 제어 출처에서만 나와 독립 평가 자료가 없는 데이터에 쓰세요. 같은 세션이나 run/driver 그룹이 양쪽에 있으면 오류입니다. 위치 인자(분할 세션)를 `--train-only`보다 먼저 쓰세요.
+
+```powershell
+$downloads = "$env:USERPROFILE\Downloads"
+# 기존 데이터셋 구성 유지: 20261110_053702_177은 이전부터 제외
+$local = Get-ChildItem "$env:USERPROFILE\AppData\LocalLow\DefaultCompany\DrivingTestSimulator\AIReport" -Directory |
+    Where-Object Name -ne "20261110_053702_177" | ForEach-Object FullName
+.\.venv\Scripts\python.exe src/deduction_labels.py "$downloads\AIReport" @local "$downloads\AIReport2_8개\AIReport" "$downloads\AIReport3" `
+    --train-only "$downloads\Unity-OBS21-final-train-118-20261126" `
+    --output res/train/sections.jsonl --val-ratio 0.2 --test-ratio 0.2 --seed 42
+```
+
+현재 `res/train/sections.jsonl`(2026-11-27)은 이 명령으로 만들었습니다. 사람 주행 45세션은 train 27 / val 9 / test 9로 나뉘고, OBS21 118 run(150구간)은 train에만 들어갑니다. 전체 627구간, 약 81MB입니다. 세션 수가 바뀌어 이전 26세션 데이터와 split이 다르므로, 위 학습·교차 검증 수치와 직접 비교하지 마세요. OBS21에서 target=1인데 모든 라벨이 0인 20개 run은 제외 사유(SignalViolation 8, SignalLongStop 4, ParkingLineTouch·ParkingBrakeNotApplied·ParkingTimeOver 각 2, WiperNotOperated 2)만 있는 경우입니다. train 전용 레코드에는 `train_only: true`가 붙습니다. `cross_validate.py`는 이 레코드를 fold 배정에서 빼고 모든 fold의 train으로만 사용합니다(결과 JSON의 `train_only_sections`). 따라서 fold val은 사람 주행 세션만으로 평가됩니다. `train_only` 레코드의 split이 train이 아니면 오류입니다.
+
 GearNotOperated(N 기어 + 주차 브레이크)와 StartTurnSignalNotOperated(좌측 방향지시등)는 출발 구간의 무작위 기기조작 지시 판정이며, 각각 기어·주차 브레이크와 방향지시등 feature로 관측할 수 있습니다.
 
 라벨에서 제외한 사유와 이유: LaneKeepingLineTouch·ParkingLineTouch(차선과 차량 위치가 feature에 없음), SignalViolation·SignalLongStop(신호등 상태가 feature에 없음), ParkingTimeOver·ParkingBrakeNotApplied(여러 T_TEST 구간에 걸친 판정), CourseTimeOver(코스 전체 시간), WiperNotOperated(와이퍼 미기록). 이 감점들도 보고서의 공식 감점과 능력 점수에는 그대로 반영됩니다.
@@ -287,6 +305,19 @@ val은 세션 5개에 양성이 몇 개뿐이라, 한 번의 학습으로 고른
 ```
 
 `train-config.bias-copies.json`을 5 fold × seed 42, 43으로 평가한 결과(`artifacts/cv-bias-copies.json`)는 9 epoch에서 평균 val BCE 0.184 ± 0.138로, 모든 fold에서 상수 예측 기준선(평균 0.290)보다 낮았습니다. 평균 곡선은 5~13 epoch에서 0.184~0.201로 평탄하고 이후 천천히 오릅니다. 표준편차는 대부분 fold 간 난이도 차이(양성이 몰린 세션이 있는 fold 0: 0.446, fold 4: 0.057)이며 같은 fold의 seed 간 차이는 작으므로, 설정 비교는 같은 fold끼리 짝지어 보세요. 9 epoch의 확률 0.5 기준 합산 val F1은 0.581(정밀도 0.818, 재현율 0.450)입니다. 라벨별로는 turn_signal_missing 0.717, stop_failure 0.545, over_speed 0.476이고 vehicle_device_error와 section_time_over는 하나도 맞히지 못했습니다(0.000). epoch별 F1은 2~9 epoch에서 0.17에서 0.58로 오른 뒤 0.55~0.60에 머뭅니다.
+
+### 크기·learning rate 격자 탐색 (`sweep.py`)
+
+`src/sweep.py`는 고정된 train/val split과 같은 seed로 hidden_size × num_layers × learning_rate 조합마다 새 모델을 학습하고 val BCE로 순위를 매깁니다. 교차 검증보다 훨씬 빠르지만 val 세션이 적어 차이가 작으면 우연일 수 있으므로, 상위 설정만 `cross_validate.py`로 다시 확인하세요.
+
+- **입력**: `baseline.py train`과 같은 설정 파일과 명령줄 덮어쓰기(`--epochs` 등), 격자 값 `--hidden-sizes`(기본 32 64 128), `--layer-counts`(기본 1 2), `--learning-rates`(기본 0.0005 0.001 0.002). `--hidden-size`/`--num-layers`/`--learning-rate`/`--output`은 시도마다 정해지므로 쓸 수 없습니다.
+- **처리**: 시도마다 최저 val BCE epoch를 고르며 checkpoint는 임시 폴더에 쓰고 지웁니다. 시도가 끝날 때마다 결과 파일을 저장하고, 같은 결과 파일·설정·데이터로 다시 실행하면 끝난 시도는 건너뜁니다(중단 후 재개, 격자 확장). 설정이나 데이터가 다르면 다른 `--results`를 요구합니다.
+- **출력**: 시도별 설정, best epoch, val BCE·micro F1(확률 0.5)·라벨별 F1, epoch별 train/val BCE와 val BCE 순위(`ranking`). 설정을 test로 고르지 않도록 test 지표는 넣지 않습니다. 기본은 epoch별 로그도 출력하며 `--quiet`는 시도 결과만 출력합니다.
+
+```powershell
+.\.venv\Scripts\python.exe src/sweep.py --config res/train-config.bias-copies.json --epochs 12 --results artifacts/sweep-20261127.json 2> artifacts/sweep-progress.20261127.log
+Get-Content artifacts/sweep-progress.20261127.log -Wait
+```
 
 학습 결과 JSON에도 `best_epoch`와 `epoch_history`(epoch별 train/val BCE와 확률 0.5 기준 val 라벨별 TP/FP/FN)가 들어가고, 평가 지표의 `per_label`에도 라벨별 `true_positive`/`false_positive`/`false_negative`가 들어갑니다. test는 설정을 모두 고른 뒤 마지막에 한 번만 평가하세요.
 

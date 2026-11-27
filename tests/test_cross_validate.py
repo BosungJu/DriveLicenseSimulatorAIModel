@@ -103,6 +103,16 @@ class FoldDataTests(unittest.TestCase):
         self.assertEqual(written[0]["features"], records[0]["features"])
         self.assertEqual(records[0]["split"], "train")
 
+    def test_WriteFoldData_TrainOnlySections_AlwaysTrainWithoutFold(self):
+        records = [make_record("a", "train", [0, 0]), dict(make_record("obs-1", "train", [1, 0]), train_only=True)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fold.jsonl"
+            write_fold_data(records, {"run:a": 0}, 0, path)
+            written = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual([(record["run_id"], record["split"]) for record in written], [("a", "val"), ("obs-1", "train")])
+
 
 class RunSummaryTests(unittest.TestCase):
     def test_SummarizeRuns_SelectsEpochWithLowestMeanValBce(self):
@@ -205,6 +215,21 @@ class CrossValidationRunTests(unittest.TestCase):
         self.assertEqual(result["settings"]["epochs"], 2)
         self.assertFalse((self.root / "model.pt").exists())
 
+    def test_Main_TrainOnlySections_TrainEveryFoldAndAreNeverValidated(self):
+        records = [json.loads(line) for line in (self.root / "data.jsonl").read_text(encoding="utf-8").splitlines()]
+        records.append(dict(make_record("obs-1", "train", [1, 1], 4.0), train_only=True))
+        (self.root / "data.jsonl").write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = main(["--config", str(self.config_path), "--folds", "2", "--seeds", "1",
+                           "--results", str(self.root / "cv.json"), "--epochs", "1"])
+
+        self.assertEqual(result["train_only_sections"], 1)
+        self.assertNotIn("run:obs-1", [group for fold in result["folds"] for group in fold["groups"]])
+        # "fast" is positive in train-2, val-1 and obs-1; only the two foldable sessions are ever validated.
+        fast = result["summary"]["selected_val_per_label"]["fast"]
+        self.assertEqual(fast["true_positive"] + fast["false_negative"], 2)
+
     def test_Main_SameSeedTwice_GivesSameCurves(self):
         argv = ["--config", str(self.config_path), "--folds", "2", "--seeds", "3", "--results", str(self.root / "cv.json")]
 
@@ -248,6 +273,12 @@ class SourceValidationTests(unittest.TestCase):
         cases = {"missing split": [{key: value for key, value in make_record("a", "train", [0, 0]).items() if key != "split"}],
                  "unknown split": [make_record("a", "holdout", [0, 0])],
                  "augmented copy": [dict(make_record("a", "train", [0, 0]), augmentation_copy=1)],
+                 "train_only outside train": [dict(make_record("a", "val", [0, 0]), train_only=True)],
+                 "run with train_only on some rows": [dict(make_record("a", "train", [0, 0]), train_only=True),
+                                                      make_record("a", "train", [0, 0])],
+                 "driver with train_only on some runs": [dict(make_record("a", "train", [0, 0], driver_id="d"),
+                                                              train_only=True),
+                                                         make_record("b", "val", [0, 0], driver_id="d")],
                  "run in test and train": [make_record("a", "test", [0, 0]), make_record("a", "train", [0, 0])],
                  "driver in test and val": [make_record("a", "test", [0, 0], driver_id="d"),
                                             make_record("b", "val", [0, 0], driver_id="d")],

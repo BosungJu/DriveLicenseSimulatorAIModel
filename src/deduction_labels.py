@@ -2,7 +2,10 @@
 
 Input  (session folders): training_sections.jsonl (TrainingDataCollector), section_results.json (ReportManager).
 A session recorded without TrainingDataCollector is read from its driving_log.csv instead.
+An OBS 2.1 package run (runs/<id>/ with label.json and the Unity session in reports/) contributes only the sections
+of its label.json scope, under its run folder name.
 Output: one merged JSONL of data contract v1 training records with split, label_names and labels.
+Sessions given as train-only always get the train split and are left out of the val/test split assignment.
 
 A label is 1 when the official scorer deducted or disqualified for that category in that section, and 0 when it
 did not. Only deduction reasons the model can observe in the recorded features are labels; the other reasons are
@@ -23,6 +26,10 @@ else:
                                  write_jsonl)
 
 TRAINING_SECTION_FILE = "training_sections.jsonl"
+# OBS 2.1 package layout: <package>/runs/<run id>/{label.json, reports/<Unity session files>}.
+OBS_RUNS_DIR = "runs"
+OBS_LABEL_FILE = "label.json"
+OBS_REPORT_DIR = "reports"
 # driving_log.csv columns before the model features (Unity DrivingFeatureColumns): time, route section and pose.
 DRIVING_LOG_METADATA_COLUMNS = ("time_s", "point_number", "heading_deg", "pos_x", "pos_z")
 # Unity TrainingDataCollector writes sample_rate_hz with "0.###", so 50.00002 Hz becomes 50.
@@ -118,11 +125,12 @@ def read_jsonl(path):
         return [json.loads(line) for line in jsonl_file if line.strip()]
 
 
-def read_session_sections(session_dir, section_results):
+def read_session_sections(session_dir, section_results, run_id):
     """Returns the unlabeled section records of one session folder.
 
-    Prefers training_sections.jsonl. Without it, builds the records from driving_log.csv the way Unity
-    TrainingDataCollector does, except that an invalid sample fails the whole session instead of skipping its section.
+    Prefers training_sections.jsonl, whose records carry Unity's own run_id. Without it, builds the records from
+    driving_log.csv under run_id the way Unity TrainingDataCollector does, except that an invalid sample fails the
+    whole session instead of skipping its section.
     """
     training_section_path = session_dir / TRAINING_SECTION_FILE
     if training_section_path.is_file():
@@ -130,46 +138,84 @@ def read_session_sections(session_dir, section_results):
 
     log_rows = read_driving_log(session_dir / DRIVING_LOG_FILE)
     if not log_rows:
-        raise ValueError(f"{session_dir.name}: {DRIVING_LOG_FILE} has no samples")
+        raise ValueError(f"{run_id}: {DRIVING_LOG_FILE} has no samples")
 
     feature_names = [name for name in log_rows[0] if name not in DRIVING_LOG_METADATA_COLUMNS]
     sample_rate_hz = round(section_results["sampleRateHz"], SAMPLE_RATE_DECIMALS)
     try:
-        return build_section_records(log_rows, feature_names, sample_rate_hz, run_id=session_dir.name)
+        return build_section_records(log_rows, feature_names, sample_rate_hz, run_id=run_id)
     except ValueError as error:
-        raise ValueError(f"{session_dir.name}: {error}") from error
+        raise ValueError(f"{run_id}: {error}") from error
+
+
+def is_obs_run_dir(path):
+    """An OBS 2.1 package run keeps its Unity session in reports/ and its target route scope in label.json."""
+    return (path / OBS_LABEL_FILE).is_file() and is_session_dir(path / OBS_REPORT_DIR)
+
+
+def read_obs_scope_points(run_dir):
+    """Returns the route points of an OBS run's label.json scope [start, end); the end point is only the exit.
+
+    The run drives from the course start to reach the scope, so the sections before it repeat nearly the same
+    automated driving in every run and are not its labeled task.
+    """
+    label = json.loads((run_dir / OBS_LABEL_FILE).read_text(encoding="utf-8-sig"))
+    scope = label.get("scope")
+    is_valid_scope = (isinstance(scope, list) and len(scope) == 2
+                      and all(isinstance(point, int) and not isinstance(point, bool) for point in scope)
+                      and scope[0] < scope[1])
+    if not is_valid_scope:
+        raise ValueError(f"{run_dir.name}: {OBS_LABEL_FILE} scope must be [start, end) route points, got {scope!r}")
+    return set(range(scope[0], scope[1]))
 
 
 def label_session(session_dir):
-    """Adds label_names/labels to the training sections of one session folder.
+    """Adds label_names/labels to the training sections of one session folder or OBS package run folder.
 
     From the first disqualified section on, the 0s of DISQUALIFIABLE_LABELS are listed in unjudged_labels, so
-    training leaves them out; the other labels and every observed 1 are kept.
+    training leaves them out; the other labels and every observed 1 are kept. An OBS run keeps only the sections
+    of its scope, labeled from the deductions of the whole run.
     Returns the labeled records, the number of sections with unjudged labels, and the number of sections with a
     positive label but no training record (Unity skips sections with missing or uneven samples).
     """
     session_dir = Path(session_dir)
+    run_id = session_dir.name
+    scope_points = None
+    if is_obs_run_dir(session_dir):
+        scope_points = read_obs_scope_points(session_dir)
+        session_dir = session_dir / OBS_REPORT_DIR
+
     section_results = json.loads((session_dir / SECTION_RESULT_FILE).read_text(encoding="utf-8-sig"))
     labels_by_point, untrusted_points = collect_section_labels(section_results)
+    if scope_points is not None:
+        labels_by_point = {point: labels for point, labels in labels_by_point.items() if point in scope_points}
 
     labeled_records = []
     recorded_points = set()
     masked_after_disqualification = 0
-    for record in read_session_sections(session_dir, section_results):
+    for record in read_session_sections(session_dir, section_results, run_id):
         section_id = record["section_id"]
+        if scope_points is not None and section_id not in scope_points:
+            continue
         if section_id not in labels_by_point:
-            raise ValueError(f"{session_dir.name}: training section {section_id} is not in {SECTION_RESULT_FILE}")
+            raise ValueError(f"{run_id}: training section {section_id} is not in {SECTION_RESULT_FILE}")
 
         recorded_points.add(section_id)
         section_labels = labels_by_point[section_id]
         labeled_record = dict(record, label_names=list(LABEL_NAMES),
                               labels=[int(name in section_labels) for name in LABEL_NAMES])
+        if scope_points is not None:
+            # An OBS run is identified by its package folder whichever file its sections come from.
+            labeled_record["run_id"] = run_id
         if section_id in untrusted_points:
             unjudged_labels = [label for label in DISQUALIFIABLE_LABELS if label not in section_labels]
             if unjudged_labels:
                 labeled_record["unjudged_labels"] = unjudged_labels
                 masked_after_disqualification += 1
         labeled_records.append(labeled_record)
+
+    if scope_points is not None and not labeled_records:
+        raise ValueError(f"{run_id}: no recorded section in its {OBS_LABEL_FILE} scope {sorted(scope_points)}")
 
     unrecorded_positive_sections = sum(
         1 for point_number, section_labels in labels_by_point.items()
@@ -221,22 +267,63 @@ def is_session_dir(path):
     return has_sections and (path / SECTION_RESULT_FILE).is_file()
 
 
+def is_labelable_dir(path):
+    return is_session_dir(path) or is_obs_run_dir(path)
+
+
 def find_session_dirs(paths):
-    """Accepts session folders, or folders (such as AIReport) whose direct subfolders are sessions."""
+    """Accepts session or OBS run folders, folders (such as AIReport) whose direct subfolders are sessions, and
+    OBS package folders whose runs/ subfolders are runs. A folder found more than once is returned once."""
     session_dirs = []
     for path in map(Path, paths):
-        if is_session_dir(path):
+        # An OBS run's reports/ folder is a plain session; label it as its run so the scope and run_id apply.
+        # samefile also matches other spellings of the folder, such as REPORTS on a case-insensitive file system.
+        if is_obs_run_dir(path.parent) and path.is_dir() and path.samefile(path.parent / OBS_REPORT_DIR):
+            path = path.parent
+        if is_labelable_dir(path):
             session_dirs.append(path)
             continue
 
         child_sessions = []
-        if path.is_dir():
-            child_sessions = sorted(child for child in path.iterdir() if child.is_dir() and is_session_dir(child))
+        for parent in (path, path / OBS_RUNS_DIR):
+            if parent.is_dir():
+                child_sessions.extend(sorted(child for child in parent.iterdir()
+                                             if child.is_dir() and is_labelable_dir(child)))
         if not child_sessions:
             raise FileNotFoundError(f"No session ({SECTION_RESULT_FILE} with {TRAINING_SECTION_FILE} or "
-                                    f"{DRIVING_LOG_FILE}) in {path} or its direct subfolders")
+                                    f"{DRIVING_LOG_FILE}, or an OBS run with {OBS_LABEL_FILE}) in {path}, "
+                                    f"its direct subfolders or its {OBS_RUNS_DIR} subfolders")
         session_dirs.extend(child_sessions)
-    return session_dirs
+
+    unique_session_dirs = {}
+    for session_dir in session_dirs:
+        unique_session_dirs.setdefault(session_dir.resolve(), session_dir)
+    return list(unique_session_dirs.values())
+
+
+def label_sessions(session_dirs):
+    """Returns the labeled records of the sessions and the summed unjudged / unrecorded positive section counts."""
+    labeled_records = []
+    masked_after_disqualification = 0
+    unrecorded_positive_sections = 0
+    for session_dir in session_dirs:
+        session_records, session_masked, session_unrecorded = label_session(session_dir)
+        labeled_records.extend(session_records)
+        masked_after_disqualification += session_masked
+        unrecorded_positive_sections += session_unrecorded
+    return labeled_records, masked_after_disqualification, unrecorded_positive_sections
+
+
+def find_shared_split_groups(split_records, train_only_records):
+    """Returns the run/driver groups present on both sides, which would leak a train-only run into val or test."""
+    split_groups = {split_group(record) for record in split_records}
+    split_run_ids = {record["run_id"] for record in split_records}
+    shared_groups = set()
+    for record in train_only_records:
+        group = split_group(record)
+        if group in split_groups or record["run_id"] in split_run_ids:
+            shared_groups.add(group)
+    return shared_groups
 
 
 def count_positives(records):
@@ -249,30 +336,41 @@ def count_positives(records):
 
 
 def build_dataset(paths, output, val_ratio=DEFAULT_VAL_RATIO, test_ratio=DEFAULT_TEST_RATIO,
-                  seed=DEFAULT_SPLIT_SEED):
-    session_dirs = find_session_dirs(paths)
-    labeled_records = []
-    masked_after_disqualification = 0
-    unrecorded_positive_sections = 0
-    for session_dir in session_dirs:
-        session_records, session_masked, session_unrecorded = label_session(session_dir)
-        labeled_records.extend(session_records)
-        masked_after_disqualification += session_masked
-        unrecorded_positive_sections += session_unrecorded
+                  seed=DEFAULT_SPLIT_SEED, train_only_paths=()):
+    """Labels the sessions of paths into train/val(/test) and those of train_only_paths into train only.
 
+    Train-only sessions are for sources without independent evaluation data, such as automated runs of one
+    controller, so val/test keep measuring the split sessions. They do not change the split of the other sessions.
+    """
+    session_dirs = find_session_dirs(paths)
+    train_only_dirs = find_session_dirs(train_only_paths) if train_only_paths else []
+    overlapping_dirs = {path.resolve() for path in session_dirs} & {path.resolve() for path in train_only_dirs}
+    if overlapping_dirs:
+        raise ValueError(f"Sessions given both for splitting and as train-only: {sorted(map(str, overlapping_dirs))}")
+
+    labeled_records, masked_after_disqualification, unrecorded_positive_sections = label_sessions(session_dirs)
+    train_only_records, train_only_masked, train_only_unrecorded = label_sessions(train_only_dirs)
     if not labeled_records:
         raise ValueError("No labeled training sections were produced")
 
+    shared_groups = find_shared_split_groups(labeled_records, train_only_records)
+    if shared_groups:
+        raise ValueError(f"Train-only sessions share run/driver groups with split sessions: {sorted(shared_groups)}")
+
     split_records = assign_splits(labeled_records, val_ratio, test_ratio, seed)
+    # train_only tells cross_validate.py to keep these sections out of its val folds as well.
+    split_records.extend(dict(record, split="train", train_only=True) for record in train_only_records)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     write_jsonl(output, split_records)
     return {
         "output": str(output),
-        "session_count": len(session_dirs),
+        "session_count": len(session_dirs) + len(train_only_dirs),
+        "train_only_session_count": len(train_only_dirs),
         "section_count": len(split_records),
-        "masked_after_disqualification": masked_after_disqualification,
-        "unrecorded_positive_sections": unrecorded_positive_sections,
+        "train_only_section_count": len(train_only_records),
+        "masked_after_disqualification": masked_after_disqualification + train_only_masked,
+        "unrecorded_positive_sections": unrecorded_positive_sections + train_only_unrecorded,
         "label_names": LABEL_NAMES,
         "positives_by_split": count_positives(split_records),
     }
@@ -285,12 +383,16 @@ def parse_args(argv=None):
     parser.add_argument("--val-ratio", type=float, default=DEFAULT_VAL_RATIO)
     parser.add_argument("--test-ratio", type=float, default=DEFAULT_TEST_RATIO)
     parser.add_argument("--seed", type=int, default=DEFAULT_SPLIT_SEED, help="Seed of the driver/run split order")
+    parser.add_argument("--train-only", nargs="+", action="extend", default=[], metavar="PATH",
+                        help="Session/OBS folders always put in train, e.g. automated runs without independent "
+                             "val/test data")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    summary = build_dataset(args.sessions, args.output, args.val_ratio, args.test_ratio, args.seed)
+    summary = build_dataset(args.sessions, args.output, args.val_ratio, args.test_ratio, args.seed,
+                            train_only_paths=args.train_only)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

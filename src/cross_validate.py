@@ -47,6 +47,7 @@ def validate_source_records(records):
     A session in both test and train/val would leak held-out data into the folds.
     """
     is_test_by_session = {}
+    is_train_only_by_session = {}
     driver_by_run = {}
     for line_number, record in enumerate(records, 1):
         # A run's sessions key on driver_id, so rows of one run with different driver_ids would split it across folds.
@@ -55,15 +56,22 @@ def validate_source_records(records):
         split = record.get("split")
         if split not in ("train", "val", "test"):
             raise ValueError(f"Record {line_number}: split must be train/val/test")
+        if record.get("train_only") and split != "train":
+            raise ValueError(f"Record {line_number}: a train_only section must have the train split")
         if record.get("augmentation_copy"):
             raise ValueError("Cross-validation needs the original sections; pass augmentation settings instead of augmented copies")
         # Runs and drivers are checked separately, as the loader does, so a run with a driver_id on only some rows is caught.
         sessions = [f"run:{record.get('run_id')}"] + ([f"driver:{record['driver_id']}"] if record.get("driver_id") else [])
         for session in sessions:
             is_test_by_session.setdefault(session, set()).add(split == "test")
+            is_train_only_by_session.setdefault(session, set()).add(bool(record.get("train_only")))
     leaked_sessions = sorted(session for session, is_test in is_test_by_session.items() if len(is_test) > 1)
     if leaked_sessions:
         raise ValueError(f"Sessions in both test and train/val: {leaked_sessions}")
+    # A held-out fold would validate the session's other rows while its train_only rows still train.
+    mixed_sessions = sorted(session for session, flags in is_train_only_by_session.items() if len(flags) > 1)
+    if mixed_sessions:
+        raise ValueError(f"Sessions with both train_only and foldable sections: {mixed_sessions}")
 
 
 def judged_label_masks(data_path, schema, data_bytes):
@@ -132,10 +140,11 @@ def describe_folds(groups, group_folds, fold_count, label_names):
 
 
 def write_fold_data(records, group_folds, fold, path):
-    """Writes the pooled records with the fold's sessions as val and the rest as train."""
+    """Writes the pooled records with the fold's sessions as val and the rest, including train_only, as train."""
     with open(path, "w", encoding="utf-8", newline="\n") as output_file:
         for record in records:
-            split = "val" if group_folds[group_key(record)] == fold else "train"
+            is_fold_val = not record.get("train_only") and group_folds[group_key(record)] == fold
+            split = "val" if is_fold_val else "train"
             output_file.write(json.dumps(dict(record, split=split), ensure_ascii=False) + "\n")
 
 
@@ -246,7 +255,11 @@ def cross_validate(training_args, fold_count, seeds):
     if any(record.get("label_names") != label_names for record in records):
         raise ValueError("Every record must use the schema's label_names")
 
-    groups = summarize_groups(records, len(label_names), label_masks)
+    # train_only sections (deduction_labels.py --train-only) train every fold and are never validated on.
+    is_foldable = [not record.get("train_only") for record in records]
+    foldable_records = [record for record, foldable in zip(records, is_foldable) if foldable]
+    foldable_masks = [mask for mask, foldable in zip(label_masks, is_foldable) if foldable]
+    groups = summarize_groups(foldable_records, len(label_names), foldable_masks)
     group_folds = assign_folds(groups, fold_count)
     folds = describe_folds(groups, group_folds, fold_count, label_names)
     for fold in folds:
@@ -262,6 +275,8 @@ def cross_validate(training_args, fold_count, seeds):
         for fold in range(fold_count):
             write_fold_data(records, group_folds, fold, data_path)
             for seed in seeds:
+                # Marks where the epoch lines of each run start when --verbose logs them.
+                LOGGER.info("run %d/%d fold %d seed %d: training", len(runs) + 1, run_count, fold, seed)
                 result = train_fold(training_args, data_path, checkpoint_path, seed)
                 runs.append({"fold": fold, "seed": seed, "best_epoch": result["best_epoch"],
                              "prevalence_val_bce": result["prevalence_baseline"]["val"]["bce"],
@@ -287,7 +302,8 @@ def cross_validate(training_args, fold_count, seeds):
                         scores["false_positive"], scores["false_negative"])
     settings = {key: value for key, value in vars(training_args).items() if key not in ("command", "output", "seed", "augmentation_seed")}
     return {"settings": settings, "data_sha256": hashlib.sha256(data_bytes).hexdigest(),
-            "excluded_test_sections": len(all_records) - len(records), "fold_count": fold_count, "seeds": list(seeds),
+            "excluded_test_sections": len(all_records) - len(records),
+            "train_only_sections": len(records) - len(foldable_records), "fold_count": fold_count, "seeds": list(seeds),
             "label_names": label_names, "folds": folds, "summary": summary, "runs": runs}
 
 
@@ -316,10 +332,10 @@ def parse_cross_validation_args(argv=None):
     return args, training_args
 
 
-def is_reserved_option(option):
-    """True for --seed/--output and the abbreviations the train parser would expand to them."""
+def is_reserved_option(option, reserved_options=RESERVED_TRAINING_OPTIONS):
+    """True for a reserved option (--seed/--output by default) and the abbreviations the train parser would expand to it."""
     name = option.split("=")[0]
-    return name.startswith("--") and len(name) > 2 and any(reserved.startswith(name) for reserved in RESERVED_TRAINING_OPTIONS)
+    return name.startswith("--") and len(name) > 2 and any(reserved.startswith(name) for reserved in reserved_options)
 
 
 def main(argv=None):

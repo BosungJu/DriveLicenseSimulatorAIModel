@@ -29,8 +29,8 @@
         "bias_max": 0,
         "noise_max": 0.6,
         "smoothing": 0.2,
-        "min": -500,
-        "max": 500,
+        "min": -1000,
+        "max": 1000,
         "protected_values": [],
         "fixed_values": [0],
         "on_violation": "keep_frame"

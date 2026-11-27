@@ -2,3 +2,8 @@ __pycache__/
 .venv/
 .venv-tools/
 artifacts/
+
+# Training data: rebuilt from the Unity session folders with src/deduction_labels.py (see docs/lstm-baseline.md)
+res/data/
+res/train/*.jsonl
+res/test/*.jsonl
