@@ -1,9 +1,12 @@
 """Section-level LSTM training and inference on CPU or CUDA. See docs/lstm-baseline.md."""
 
 import argparse
-from contextlib import contextmanager
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 import copy
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -18,9 +21,9 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 if __package__:
-    from .model import SectionLSTM
+    from .model import POOLING_MODES, SectionLSTM
 else:
-    from model import SectionLSTM
+    from model import POOLING_MODES, SectionLSTM
 
 # Training progress; the CLI shows it on stderr, library callers enable it with logging configuration.
 LOGGER = logging.getLogger("drive_lstm")
@@ -29,6 +32,10 @@ AUGMENTATION_SEED_OFFSET = 1_000_003
 MIN_AUGMENTATION_APPLY_RATE = 0.1
 # Probability at or above which a label is flagged when no tuned threshold exists.
 DEFAULT_LABEL_THRESHOLD = 0.5
+# Batches between running train BCE lines inside an epoch; 0 logs only the per-epoch summary.
+DEFAULT_LOG_EVERY_BATCHES = 20
+# Train batches built ahead on a background thread while the device trains on the current one.
+TRAIN_BATCH_PREFETCH_COUNT = 2
 # Required augmentation settings; augmented_copies is optional.
 AUGMENTATION_KEYS = frozenset({"probability", "features"})
 # Per-feature on_violation: drop the feature's whole candidate (default), or keep only the violating frames original.
@@ -326,6 +333,46 @@ def make_batch(records, mean, scale, augmentation=None, generator=None, augmenta
     return pad_sequence(sequences, batch_first=True), lengths
 
 
+def make_train_batch(train_records, entries, mean, scale, augmentation, generator, augmentation_stats):
+    """Builds one normalized, padded train batch for the shuffled entries, augmenting it as configured."""
+    augmented_copies = augmentation.get("augmented_copies") if augmentation is not None else None
+    if augmented_copies:
+        batch = make_copy_batch(train_records, entries, augmentation, generator, augmentation_stats)
+        features, lengths = make_batch(batch, mean, scale)
+    else:
+        batch = [train_records[index] for index in entries]
+        features, lengths = make_batch(batch, mean, scale, augmentation, generator, augmentation_stats)
+    labels = torch.stack([record["labels"] for record in batch])
+    label_masks = torch.stack([record["label_mask"] for record in batch])
+    return features, lengths, labels, label_masks
+
+
+def iterate_prefetched(make_item, arguments, prefetch_count):
+    """Yields make_item(argument) in order while up to prefetch_count later items are built on one background thread.
+
+    A single worker runs the calls one at a time in submission order, so random generators they share are consumed in
+    the same order as a plain loop and results stay identical. A worker error is raised when its item is requested.
+    """
+    argument_iterator = iter(arguments)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="train-batch") as executor:
+        pending = deque(executor.submit(make_item, argument) for argument in itertools.islice(argument_iterator, prefetch_count))
+        try:
+            while pending:
+                item = pending.popleft().result()
+                for argument in itertools.islice(argument_iterator, 1):
+                    pending.append(executor.submit(make_item, argument))
+                yield item
+        finally:
+            for future in pending:
+                future.cancel()
+
+
+def log_batch_progress(epoch, epoch_count, batch, batch_count, epoch_loss_sum, recent_loss_sum, recent_batch_count):
+    """Logs the running train BCE inside an epoch: the epoch average so far and the average of the latest batches."""
+    LOGGER.info("  batch %d/%d (epoch %d/%d)  train_bce %.4f  last %d batches %.4f", batch, batch_count, epoch, epoch_count,
+                epoch_loss_sum / batch, recent_batch_count, recent_loss_sum / recent_batch_count)
+
+
 def log_epoch_progress(epoch, epoch_count, train_bce, val_bce, is_best_epoch, elapsed_seconds):
     """Logs one finished epoch with the remaining time estimated from the average epoch duration so far."""
     remaining_seconds = elapsed_seconds / epoch * (epoch_count - epoch)
@@ -536,6 +583,10 @@ class LSTMBaseline:
                 raise ValueError(f"{key} must be a positive integer")
         if type(args.learning_rate) not in (int, float) or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
             raise ValueError("learning_rate must be finite and positive")
+        validate_regularization(getattr(args, "dropout", 0.0), getattr(args, "weight_decay", 0.0), getattr(args, "pooling", "last"))
+        log_every_batches = getattr(args, "log_every_batches", DEFAULT_LOG_EVERY_BATCHES)
+        if type(log_every_batches) is not int or log_every_batches < 0:
+            raise ValueError("log_every_batches must be a nonnegative integer")
         deterministic = getattr(args, "deterministic", True)
         if type(deterministic) is not bool:
             raise ValueError("deterministic must be true or false")
@@ -544,6 +595,10 @@ class LSTMBaseline:
 
     def _fit(self, args):
         num_layers = getattr(args, "num_layers", 1)
+        dropout = getattr(args, "dropout", 0.0)
+        weight_decay = getattr(args, "weight_decay", 0.0)
+        pooling = getattr(args, "pooling", "last")
+        log_every_batches = getattr(args, "log_every_batches", DEFAULT_LOG_EVERY_BATCHES)
         schema = json.loads(Path(args.schema).read_text(encoding="utf-8"))
         sample_rate = schema.get("sample_rate_hz")
         if type(schema.get("schema_version")) is not int or schema["schema_version"] != 1 or isinstance(sample_rate, bool) or not isinstance(sample_rate, (int, float)) or not math.isfinite(sample_rate) or sample_rate <= 0:
@@ -586,8 +641,13 @@ class LSTMBaseline:
                 warnings.warn(f"Training label {name!r} is not judged in any train section; it cannot be learned")
             elif rate in (0.0, 1.0):
                 warnings.warn(f"Training label {name!r} has only one class; discrimination cannot be learned")
-        model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size, num_layers=num_layers).to(self.device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+        model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size, num_layers=num_layers,
+                            dropout=dropout, pooling=pooling).to(self.device)
+        # Plain Adam without decay keeps earlier results reproducible; decay is decoupled (AdamW) when requested.
+        if weight_decay > 0:
+            optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=weight_decay)
+        else:
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
         best_loss = math.inf
         best_state = None
         best_epoch = None
@@ -595,37 +655,48 @@ class LSTMBaseline:
         augmented_copies = augmentation.get("augmented_copies") if augmentation is not None else None
         samples_per_section = 1 + augmented_copies if augmented_copies else 1
         samples_per_epoch = len(splits["train"]) * samples_per_section
+        batches_per_epoch = math.ceil(samples_per_epoch / args.batch_size)
         LOGGER.info("Training on %s: %d train sections x %d = %d samples, %d batches/epoch, %d epochs, %d val sections",
                     self.device, len(splits["train"]), samples_per_section, samples_per_epoch,
-                    math.ceil(samples_per_epoch / args.batch_size), args.epochs, len(splits["val"]))
+                    batches_per_epoch, args.epochs, len(splits["val"]))
         training_start = time.perf_counter()
         for epoch in range(args.epochs):
             model.train()
             epoch_loss_sum = 0.0
             epoch_batch_count = 0
+            recent_loss_sum = 0.0
+            recent_batch_count = 0
             order = torch.randperm(samples_per_epoch).tolist()
-            for start in range(0, len(order), args.batch_size):
-                entries = order[start:start + args.batch_size]
-                if augmented_copies:
-                    batch = make_copy_batch(splits["train"], entries, augmentation, augmentation_generator, augmentation_stats)
-                    features, lengths = make_batch(batch, mean, scale)
-                else:
-                    batch = [splits["train"][index] for index in entries]
-                    features, lengths = make_batch(batch, mean, scale, augmentation, augmentation_generator, augmentation_stats)
-                features = features.to(self.device)
-                labels = torch.stack([record["labels"] for record in batch]).to(self.device)
-                label_masks = torch.stack([record["label_mask"] for record in batch]).to(self.device)
-                optimizer.zero_grad()
-                # Mean over the judged labels; with every label judged this equals the plain mean BCE.
-                losses = nn.functional.binary_cross_entropy_with_logits(model(features, lengths), labels, reduction="none")
-                loss = (losses * label_masks).sum() / label_masks.sum().clamp(min=1)
-                if not torch.isfinite(loss):
-                    raise ValueError("Nonfinite training loss; check feature magnitudes")
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                epoch_loss_sum += loss.item()
-                epoch_batch_count += 1
+            epoch_entries = [order[start:start + args.batch_size] for start in range(0, len(order), args.batch_size)]
+            # CPU augmentation of the next batches overlaps the device work on the current one.
+            train_batches = iterate_prefetched(
+                lambda entries: make_train_batch(splits["train"], entries, mean, scale, augmentation,
+                                                 augmentation_generator, augmentation_stats),
+                epoch_entries, TRAIN_BATCH_PREFETCH_COUNT)
+            with closing(train_batches):
+                for features, lengths, labels, label_masks in train_batches:
+                    features = features.to(self.device)
+                    labels = labels.to(self.device)
+                    label_masks = label_masks.to(self.device)
+                    optimizer.zero_grad()
+                    # Mean over the judged labels; with every label judged this equals the plain mean BCE.
+                    losses = nn.functional.binary_cross_entropy_with_logits(model(features, lengths), labels, reduction="none")
+                    loss = (losses * label_masks).sum() / label_masks.sum().clamp(min=1)
+                    if not torch.isfinite(loss):
+                        raise ValueError("Nonfinite training loss; check feature magnitudes")
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                    epoch_loss_sum += loss.item()
+                    epoch_batch_count += 1
+                    recent_loss_sum += loss.item()
+                    recent_batch_count += 1
+                    # The epoch line below already covers the last batch, so it is not logged twice.
+                    if log_every_batches and epoch_batch_count % log_every_batches == 0 and epoch_batch_count < batches_per_epoch:
+                        log_batch_progress(epoch + 1, args.epochs, epoch_batch_count, batches_per_epoch,
+                                           epoch_loss_sum, recent_loss_sum, recent_batch_count)
+                        recent_loss_sum = 0.0
+                        recent_batch_count = 0
             metrics = evaluate(model, splits["val"], mean, scale, args.batch_size)
             if metrics["bce"] is None or not math.isfinite(metrics["bce"]):
                 raise ValueError("Nonfinite validation loss")
@@ -651,7 +722,8 @@ class LSTMBaseline:
         label_threshold_map = dict(zip(schema["label_names"], label_thresholds))
         LOGGER.info("Label thresholds chosen on val: %s",
                     ", ".join(f"{name} {threshold:.3f}" for name, threshold in label_threshold_map.items()))
-        constant_model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size, num_layers=num_layers).to(self.device)
+        constant_model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), args.hidden_size, num_layers=num_layers,
+                                     pooling=pooling).to(self.device)
         with torch.no_grad():
             constant_model.classifier.weight.zero_()
             constant_model.classifier.bias.copy_(torch.logit(prevalence.clamp(1e-6, 1 - 1e-6)).to(self.device))
@@ -660,6 +732,7 @@ class LSTMBaseline:
             if counts["attempted"] and counts["applied"] / counts["attempted"] < MIN_AUGMENTATION_APPLY_RATE:
                 warnings.warn(f"Augmentation {name!r} applied to less than 10% of attempts; inspect bounds/thresholds and strength")
         checkpoint = {"format_version": 1, "schema": schema, "hidden_size": args.hidden_size, "num_layers": num_layers,
+                      "dropout": dropout, "pooling": pooling,
                       "mean": mean, "scale": scale, "state_dict": best_state,
                       "seed": args.seed, "best_epoch": best_epoch, "metrics": metrics,
                       "label_thresholds": label_threshold_map, "tuned_metrics": tuned_metrics,
@@ -672,6 +745,9 @@ class LSTMBaseline:
                       "python_version": sys.version, "data_sha256": data_sha256}
         checkpoint["training_args"]["device"] = str(self.device)
         checkpoint["training_args"]["num_layers"] = num_layers
+        checkpoint["training_args"]["dropout"] = dropout
+        checkpoint["training_args"]["weight_decay"] = weight_decay
+        checkpoint["training_args"]["pooling"] = pooling
         checkpoint["training_args"]["deterministic"] = getattr(args, "deterministic", True)
         self._model = model
         self._checkpoint = checkpoint
@@ -698,7 +774,8 @@ class LSTMBaseline:
         baseline = cls(device)
         schema = checkpoint["schema"]
         baseline._model = SectionLSTM(len(schema["feature_names"]), len(schema["label_names"]), checkpoint["hidden_size"],
-                                     num_layers=checkpoint.get("num_layers", 1)).to(baseline.device)
+                                     num_layers=checkpoint.get("num_layers", 1), dropout=checkpoint.get("dropout", 0.0),
+                                     pooling=checkpoint.get("pooling", "last")).to(baseline.device)
         baseline.model.load_state_dict(checkpoint["state_dict"])
         baseline.model.eval()
         baseline._checkpoint = checkpoint
@@ -813,6 +890,15 @@ def positive_int(value):
     return number
 
 
+def validate_regularization(dropout=0.0, weight_decay=0.0, pooling="last"):
+    if type(dropout) not in (int, float) or not math.isfinite(dropout) or not 0 <= dropout < 1:
+        raise ValueError("dropout must be in [0, 1)")
+    if type(weight_decay) not in (int, float) or not math.isfinite(weight_decay) or weight_decay < 0:
+        raise ValueError("weight_decay must be finite and nonnegative")
+    if pooling not in POOLING_MODES:
+        raise ValueError(f"pooling must be one of {', '.join(POOLING_MODES)}")
+
+
 def positive_float(value):
     number = float(value)
     if not math.isfinite(number) or number <= 0:
@@ -831,7 +917,12 @@ def add_training_arguments(command_parser):
     command_parser.add_argument("--hidden-size", type=positive_int)
     command_parser.add_argument("--num-layers", type=positive_int, help="Number of stacked LSTM layers (default: 1)")
     command_parser.add_argument("--learning-rate", type=positive_float)
+    command_parser.add_argument("--dropout", type=float, help="Dropout on the readout and between stacked layers, in [0, 1) (default: 0)")
+    command_parser.add_argument("--weight-decay", type=float, help="Decoupled AdamW weight decay; 0 uses Adam (default: 0)")
+    command_parser.add_argument("--pooling", choices=POOLING_MODES, help="Sequence readout: last hidden state or mean+max over time (default: last)")
     command_parser.add_argument("--seed", type=int)
+    command_parser.add_argument("--log-every-batches", type=int,
+                                help=f"Log the running train BCE every N batches; 0 logs only per epoch (default: {DEFAULT_LOG_EVERY_BATCHES})")
     command_parser.add_argument("--augmentation-seed", type=int, help="Independent augmentation RNG seed")
     command_parser.add_argument("--device", help="auto, cpu, cuda or cuda:<index>")
     command_parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=None)
@@ -858,6 +949,7 @@ def parse_args(argv=None):
     if args.command == "augment" and args.output is None:
         parser.error("augment requires --output, the augmented JSONL path")
     defaults = {"epochs": 20, "batch_size": 32, "hidden_size": 64, "num_layers": 1, "learning_rate": 0.001, "seed": 42,
+                "dropout": 0.0, "weight_decay": 0.0, "pooling": "last", "log_every_batches": DEFAULT_LOG_EVERY_BATCHES,
                 "data": None, "schema": None, "output": None, "augmentation": None, "augmentation_seed": None,
                 "device": "auto", "deterministic": True}
     configured = {}
@@ -880,6 +972,10 @@ def parse_args(argv=None):
                     raise ValueError(f"{key} must be {'an integer' if key == 'seed' else 'a positive integer'}")
             if key == "learning_rate" and (type(value) not in (int, float) or not math.isfinite(value) or value <= 0):
                 raise ValueError("learning_rate must be finite and positive")
+            if key == "log_every_batches" and (type(value) is not int or value < 0):
+                raise ValueError("log_every_batches must be a nonnegative integer")
+            if key in ("dropout", "weight_decay", "pooling"):
+                validate_regularization(**{key: value})
             if key == "augmentation_seed" and value is not None and type(value) is not int:
                 raise ValueError("augmentation_seed must be an integer or null")
             if key == "device":

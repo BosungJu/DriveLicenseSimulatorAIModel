@@ -1,7 +1,7 @@
 {
-  "data": "train/sections.jsonl",
-  "schema": "schema.example.json",
-  "output": "../artifacts/lstm-augmented.pt",
+  "data": "../train/sections.jsonl",
+  "schema": "../schema.example.json",
+  "output": "../../artifacts/lstm-augmented.pt",
   "device": "auto",
   "deterministic": true,
   "epochs": 20,

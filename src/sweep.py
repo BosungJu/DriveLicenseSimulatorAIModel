@@ -33,8 +33,8 @@ DEFAULT_LAYER_COUNTS = (1, 2)
 DEFAULT_LEARNING_RATES = (0.0005, 0.001, 0.002)
 # Set per trial by the grid, or per trial as a temporary checkpoint.
 RESERVED_TRAINING_OPTIONS = ("--hidden-size", "--num-layers", "--learning-rate", "--output")
-# Base settings that differ per trial or only name files, so they are not part of the resume match.
-TRIAL_SETTING_KEYS = ("command", "output", "hidden_size", "num_layers", "learning_rate")
+# Base settings that differ per trial, only name files or only change logging, so they are not part of the resume match.
+TRIAL_SETTING_KEYS = ("command", "output", "hidden_size", "num_layers", "learning_rate", "log_every_batches")
 
 
 def trial_name(hidden_size, num_layers, learning_rate):

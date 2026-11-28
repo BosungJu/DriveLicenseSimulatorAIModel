@@ -8,30 +8,32 @@
     "AGENTS.md": "7dc04139b82585383fbc236ade9c97c879ea250e6b86b803177c904589d47cce",
     "AI_Development_Context.md": "6adf0c0b21c12a4a452823b8224a8f76c252aa1e08ff04a9b5910564e73c0f95",
     "CLAUDE.md": "e7853d902778dad2a349217bab21fa5d606cb23551d3cdb009f21cc3249f81cd",
-    "README.md": "c8586cf5fc384a33dfa4fd3cf44cfceec5b93de51c70af6bb61a73c6a261a167",
-    "docs/lstm-baseline.md": "db97551807a15103bd3476a05387cab857df3ddfc3d3f6340662a43eb10a0f21",
+    "README.md": "f9302a3ee6a7addaea4e24d14461d2aef0389eb9e589269905b8bf0accef97c0",
+    "docs/lstm-baseline.md": "a06afaa95c92b9f44096bf9c8deb2dab4a390065bbee7cf9442484b8a0aa9c50",
     "docs/lstm-review.md": "bd0321ba76bcd3be05de52a99609610ffef057fadf833f609d3c892b5f59c35c",
     "docs/unity-input-review.md": "4b937ca14fd7afe18495f00e8e26e9621984fdaeb7e3d20cb35681ce2f7ca4cb",
     "src/baseline.py": "4fd86961c089649690522f2481cc8fc0d9c98ddf5dec8697dbed6975475a4645",
-    "src/cross_validate.py": "c9da635678be887bf1979500c66b89951a670efe702142765e26a48506986f0e",
-    "src/deduction_labels.py": "20d5b651227ec2f325d4bf5dd054113eea9098b9638b5f9516749bf77dd10745",
+    "src/cross_validate.py": "94aa4a0252d354a43b00a11d3b81ecbc62147e10a23a0698c8373a216e8605ae",
+    "src/deduction_labels.py": "d44bffbef969dc279e7ec38137ca534c0152270fdd7d2d98ce8ac9d4fc8af068",
     "src/model.py": "e293c54becda355a7fdcd1e7d8ba7863b12253c140c8222e95c93e950bead136",
     "src/report.py": "b62e972131850b0bec47be34b3915600b04375293823b0ef59cde0b0b2c41e34",
     "src/session_predict.py": "b73dfe233c7f397398ecf1f1aaa92e1010324dbd4c3d1b8cb0ebdcc77f177dbd",
+    "src/sweep.py": "e23494cc2137b1aa72c443fd0297bf1bfaf9f155c07e12c02740ef79321697e7",
     "tests/test_augmentation.py": "9eb7c14556dda10ba6aff7450bb3d08c7ea33abf63ad764390ee35fc683fe24a",
     "tests/test_baseline.py": "fbe36b1d584448583bcf3c5b48bec67ad35bb0ce830bb2598a59ac88115927a9",
-    "tests/test_cross_validate.py": "8b742787fdfd28ca0bc1f2ca4542ae5aef94afaeb4f9bc296eceb59e3592b7b5",
-    "tests/test_deduction_labels.py": "a34482fcba779da1c51e20615b13685e03a84a15d06b8d2cfd5c96b13783e9d6",
+    "tests/test_cross_validate.py": "c66f9c5c39607181761604ed5c5cbe9629e830373a1f910184487e32e3c62965",
+    "tests/test_deduction_labels.py": "43b9e2856a934cfd1dca4ef947d0de341bce7bca65309be8d2a379cd169ead48",
     "tests/test_label_sections.py": "2ad5d63bba1815c656ee3667b882cf9676067a472de2c56515ebb9961b0426dd",
     "tests/test_label_thresholds.py": "7fc53ad1c2f7f4bc2f6538218626b9ad9e7ef1d96484ae4694d7bdcebf46fe67",
     "tests/test_model.py": "76c6133bd519ff728db3cf502bbf5a7c170a0143dcc310b3c0ecaa473ea51abd",
     "tests/test_session_report.py": "9fb79318bf12506891991f6bd380e33729135119bdce5c405ca0b583246a00ee",
+    "tests/test_sweep.py": "4399c36727cfdf8569a2007a06d0dd53c3438734c94451d3594c46c0a2ea124b",
     "tests/test_unity_input_features.py": "6465109535aa15d2b12e77ede0c85f1d11240add3df7076cd7e2c3dfb44d6987",
     "tools/claude-review-mcp.mjs": "1df3d7de53abf5d14afb848a2332816d0d28abaf220864fa332c973dc5eab8b1",
     "tools/claude-review-mcp.test.mjs": "715dd62c0a7afd5f1cc27bf1f13481f88686a1b463af281730894332ca19b532"
   },
-  "indexed_at_commit": "a814c59c6efb7c6a97f3a436d1adefa021fd5e7d",
-  "indexed_at_timestamp": "2026-11-27T02:15:31.045020600+00:00",
+  "indexed_at_commit": "87bd9e37f8131d7b7094d4898b3028f85b09b4b9",
+  "indexed_at_timestamp": "2026-11-27T08:27:09.298146600+00:00",
   "languages": {
     "bash": {
       "calls": 0,
@@ -43,19 +45,19 @@
     },
     "markdown": {
       "calls": 0,
-      "nodes": 60
+      "nodes": 62
     },
     "python": {
-      "calls": 493,
-      "nodes": 279
+      "calls": 672,
+      "nodes": 323
     }
   },
   "parser_version": "3.4.3",
   "schema_version": 3,
   "stats": {
-    "total_edges": 746,
-    "total_files": 29,
-    "total_nodes": 346
+    "total_edges": 960,
+    "total_files": 31,
+    "total_nodes": 392
   },
   "vexp_version": "3.5.1"
 }
